@@ -7,8 +7,9 @@ Layout
 ------
   ┌─────────────────────────────────┬────────────────┐
   │                                 │  INFO PANEL    │
-  │         CHESS BOARD             │  - Status      │
-  │          (560×560)              │  - Move history│
+  │         CHESS BOARD             │  - Eval bar    │
+  │          (560×560)              │  - Status      │
+  │                                 │  - Move history│
   │                                 │  - Controls    │
   └─────────────────────────────────┴────────────────┘
 
@@ -19,6 +20,7 @@ Controls
   - R key             : restart game
   - Q / Esc           : quit
   - F key             : flip board
+  - S key             : toggle score bar
 """
 
 from __future__ import annotations
@@ -31,7 +33,8 @@ import chess
 import pygame
 import pygame.freetype
 
-from engine.minimax import SearchEngine
+from engine.minimax import SearchEngine, MATE_SCORE
+from engine.evaluation import evaluate
 
 # ---------------------------------------------------------------------------
 # Layout constants
@@ -58,6 +61,17 @@ C_TEXT        = (230, 230, 230)
 C_TEXT_DIM    = (140, 140, 140)
 C_ACCENT      = ( 52, 152, 219)   # blue accent
 C_WIN_TEXT    = (255, 215,   0)   # gold
+
+# Score bar colors
+C_EVAL_WHITE  = (240, 240, 240)   # white-side portion
+C_EVAL_BLACK  = ( 30,  30,  30)   # black-side portion
+C_EVAL_BORDER = ( 90,  90,  90)
+C_EVAL_WIN    = ( 46, 204, 113)   # green: decisive advantage
+C_EVAL_TEXT_W = ( 20,  20,  20)   # score text on white bar
+C_EVAL_TEXT_B = (220, 220, 220)   # score text on black bar
+
+# Eval bar display cap (scores beyond this are shown as max)
+EVAL_DISPLAY_MAX = 800   # centipawns (~8 pawns = decisive)
 
 # ---------------------------------------------------------------------------
 # Unicode chess pieces
@@ -118,6 +132,12 @@ class ChessGUI:
         self.status_msg = ""
         self.game_over = False
 
+        # Evaluation score (centipawns, always from White's perspective)
+        # Updated after every move: static eval for human moves,
+        # engine search score for engine moves.
+        self.eval_score: int = 0
+        self.show_eval: bool = True         # toggle with S key
+
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -159,6 +179,8 @@ class ChessGUI:
                         self._restart()
                     elif event.key == pygame.K_f:
                         self.flipped = not self.flipped
+                    elif event.key == pygame.K_s:
+                        self.show_eval = not self.show_eval
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     self._handle_click(event.pos)
 
@@ -284,6 +306,12 @@ class ChessGUI:
         pygame.draw.line(self.screen, C_PANEL_LINE, (px + 8, y), (px + PANEL_WIDTH - 8, y))
         y += 12
 
+        # --- Evaluation score bar ---
+        if self.show_eval:
+            y = self._draw_eval_bar(px, y)
+            pygame.draw.line(self.screen, C_PANEL_LINE, (px + 8, y), (px + PANEL_WIDTH - 8, y))
+            y += 12
+
         # Status
         status_color = C_WIN_TEXT if self.game_over else C_ACCENT if self.engine_thinking else C_TEXT
         self._panel_text(self.status_msg, px + 10, y, self.info_font, status_color)
@@ -312,12 +340,109 @@ class ChessGUI:
             y += 18
 
         # Controls hint at bottom
-        hint_y = WIN_HEIGHT - 48
+        hint_y = WIN_HEIGHT - 56
         pygame.draw.line(self.screen, C_PANEL_LINE, (px + 8, hint_y - 6), (px + PANEL_WIDTH - 8, hint_y - 6))
-        self._panel_text("[R] New game   [F] Flip   [Q] Quit", px + 10, hint_y, self.hint_font, C_TEXT_DIM)
+        self._panel_text("[R] New   [F] Flip   [S] Score   [Q] Quit", px + 10, hint_y, self.hint_font, C_TEXT_DIM)
         y2 = hint_y + 18
         depth_str = f"Depth: {self.engine_depth}   Time: {self.engine_time:.0f}s"
         self._panel_text(depth_str, px + 10, y2, self.hint_font, C_TEXT_DIM)
+
+    def _draw_eval_bar(self, px: int, y: int) -> int:
+        """
+        Draw the evaluation score bar and return the new y position after drawing.
+
+        The bar is horizontal:
+          [White ██████████░░░░ Black]
+        with the score label centered on whichever side is winning.
+
+        Score is centipawns from White's perspective:
+          positive → White is ahead (white portion wider)
+          negative → Black is ahead (black portion wider)
+        """
+        score = self.eval_score
+        bar_x     = px + 10
+        bar_y     = y + 4
+        bar_w     = PANEL_WIDTH - 20
+        bar_h     = 22
+        border_r  = 4
+
+        # --- Compute white fraction ---
+        # Clamp score to ±EVAL_DISPLAY_MAX, then map to [0.05, 0.95]
+        # so neither side ever disappears completely unless truly decisive.
+        mate_threshold = MATE_SCORE - 500
+        is_mate = abs(score) >= mate_threshold
+
+        if is_mate:
+            white_frac = 0.97 if score > 0 else 0.03
+        else:
+            clamped = max(-EVAL_DISPLAY_MAX, min(EVAL_DISPLAY_MAX, score))
+            white_frac = 0.5 + clamped / (2 * EVAL_DISPLAY_MAX)
+            white_frac = max(0.05, min(0.95, white_frac))
+
+        white_w = int(bar_w * white_frac)
+        black_w = bar_w - white_w
+
+        # --- Background (full bar, rounded) ---
+        pygame.draw.rect(self.screen, C_EVAL_BLACK,
+                         pygame.Rect(bar_x, bar_y, bar_w, bar_h), border_radius=border_r)
+
+        # --- White portion (left) ---
+        if white_w > 0:
+            white_color = C_EVAL_WIN if (score >= EVAL_DISPLAY_MAX or is_mate and score > 0) else C_EVAL_WHITE
+            pygame.draw.rect(self.screen, white_color,
+                             pygame.Rect(bar_x, bar_y, white_w, bar_h), border_radius=border_r)
+
+        # --- Black portion winning color (right, decisive) ---
+        if black_w > 0 and (score <= -EVAL_DISPLAY_MAX or is_mate and score < 0):
+            pygame.draw.rect(self.screen, C_EVAL_WIN,
+                             pygame.Rect(bar_x + white_w, bar_y, black_w, bar_h), border_radius=border_r)
+
+        # --- Border ---
+        pygame.draw.rect(self.screen, C_EVAL_BORDER,
+                         pygame.Rect(bar_x, bar_y, bar_w, bar_h), 1, border_radius=border_r)
+
+        # --- Divider line between white/black sections ---
+        if 0 < white_w < bar_w:
+            pygame.draw.line(self.screen, C_EVAL_BORDER,
+                             (bar_x + white_w, bar_y),
+                             (bar_x + white_w, bar_y + bar_h), 2)
+
+        # --- Score label ---
+        if is_mate:
+            moves_to_mate = MATE_SCORE - abs(score)
+            label = f"M{moves_to_mate}" if moves_to_mate > 0 else "Mate"
+        elif score == 0:
+            label = "0.00"
+        else:
+            label = f"{score / 100:+.2f}"
+
+        # Place label on the wider side
+        try:
+            surf, rect = self.eval_score_font.render(label, C_EVAL_TEXT_W if white_frac >= 0.5 else C_EVAL_TEXT_B)
+            # Center in the dominant section
+            if white_frac >= 0.5:
+                cx = bar_x + white_w // 2
+            else:
+                cx = bar_x + white_w + black_w // 2
+            rect.center = (cx, bar_y + bar_h // 2)
+            self.screen.blit(surf, rect)
+        except Exception:
+            pass
+
+        # --- Labels: "White" left, "Black" right ---
+        y_label = bar_y + bar_h + 3
+        self._panel_text("White", bar_x, y_label, self.hint_font, C_TEXT_DIM)
+        try:
+            surf, rect = self.hint_font.render("Black", C_TEXT_DIM)
+            self.screen.blit(surf, (bar_x + bar_w - rect.width, y_label))
+        except Exception:
+            pass
+
+        # --- "Eval" header above bar ---
+        thinking_note = " (thinking...)" if self.engine_thinking else ""
+        self._panel_text(f"Eval{thinking_note}", px + 10, y, self.hint_font, C_TEXT_DIM)
+
+        return y_label + 18  # next y after this section
 
     def _panel_text(self, text: str, x: int, y: int, font, color) -> None:
         try:
@@ -398,13 +523,16 @@ class ChessGUI:
     # Move application
     # ------------------------------------------------------------------
 
-    def _apply_move(self, move: chess.Move) -> None:
+    def _apply_move(self, move: chess.Move, update_eval: bool = True) -> None:
         san = self.board.san(move)
         self.board.push(move)
         self.last_move = move
         self.move_history.append(san)
         self._check_game_over()
         self._update_status()
+        # Update eval with static evaluation (overridden by engine score after engine moves)
+        if update_eval:
+            self.eval_score = evaluate(self.board)
 
     def _check_game_over(self) -> None:
         if self.board.is_game_over():
@@ -451,12 +579,20 @@ class ChessGUI:
         )
         with self._lock:
             self.engine_move_result = move
+            # score is from engine's perspective; convert to White's perspective
+            if self.player_color == chess.WHITE:
+                # engine is Black → engine's "good" = White's "bad"
+                self._pending_eval = -score
+            else:
+                # engine is White → engine's "good" = White's "good"
+                self._pending_eval = score
 
     def _collect_engine_result(self) -> None:
         if not self.engine_thinking:
             return
         with self._lock:
             move = self.engine_move_result
+            pending_eval = getattr(self, "_pending_eval", None)
         if move is None:
             return
         # Engine finished
@@ -464,10 +600,14 @@ class ChessGUI:
         if not self.game_over:
             if move in self.board.legal_moves:
                 self._apply_move(move)
+                # Use engine's search score (deeper/more accurate than static eval)
+                if pending_eval is not None:
+                    self.eval_score = pending_eval
             else:
                 self.status_msg = "Engine error — no legal move"
         with self._lock:
             self.engine_move_result = None
+            self._pending_eval = None
 
     # ------------------------------------------------------------------
     # Restart
@@ -483,6 +623,7 @@ class ChessGUI:
         self.engine_move_result = None
         self.move_history  = []
         self.game_over     = False
+        self.eval_score    = 0
         self._update_status()
 
         if self.board.turn != self.player_color and not self.game_over:
@@ -530,11 +671,12 @@ class ChessGUI:
         if not piece_font_loaded:
             self.piece_font = pygame.freetype.SysFont(None, piece_size)
 
-        self.title_font = pygame.freetype.SysFont("Segoe UI", 20, bold=True)
-        self.info_font  = pygame.freetype.SysFont("Segoe UI", 14)
-        self.mono_font  = pygame.freetype.SysFont("Consolas", 13)
-        self.coord_font = pygame.freetype.SysFont("Segoe UI", 11)
-        self.hint_font  = pygame.freetype.SysFont("Segoe UI", 11)
+        self.title_font      = pygame.freetype.SysFont("Segoe UI", 20, bold=True)
+        self.info_font       = pygame.freetype.SysFont("Segoe UI", 14)
+        self.mono_font       = pygame.freetype.SysFont("Consolas", 13)
+        self.coord_font      = pygame.freetype.SysFont("Segoe UI", 11)
+        self.hint_font       = pygame.freetype.SysFont("Segoe UI", 11)
+        self.eval_score_font = pygame.freetype.SysFont("Consolas", 12, bold=True)
 
 
 # ---------------------------------------------------------------------------
