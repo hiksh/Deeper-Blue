@@ -33,28 +33,36 @@
 ```
 Deeper-Blue/
 ├── engine/
-│   ├── evaluation.py      # 정적 평가 함수 (기물 가중치, PST, 폰 구조, 킹 안전, 모빌리티)
-│   ├── minimax.py         # 탐색 엔진 (Negamax + Alpha-Beta + ID + QSearch + TT)
+│   ├── minimax.py         # 탐색 엔진 (Negamax, Alpha-Beta, PVS, LMR, QSearch, TT...)
+│   ├── evaluation.py      # 정적 평가 함수 (기물, PST, 폰 구조, 비숍쌍, 룩, 킹, 모빌리티)
 │   └── move_ordering.py   # 무브 정렬 (MVV-LVA, Killer, History, Check bonus)
 ├── analysis/
 │   ├── pgn_parser.py      # PGN → FEN 추출, 미들/엔드게임 분류
-│   └── comparator.py      # 우리 수 vs 딥블루 수 → Stockfish 비교
+│   ├── comparator.py      # 우리 수 vs 딥블루 수 → Stockfish 비교
+│   └── visualizer.py      # 비교 결과 차트 생성
+├── game/
+│   └── chess_gui.py       # Pygame GUI (사람 vs 엔진, 평가 바 포함)
+├── web/
+│   ├── app.py             # Flask 백엔드 (REST API)
+│   └── templates/
+│       └── index.html     # 웹 체스 UI (chessboard.js)
 ├── data/
 │   └── pgn/               # 1997 Kasparov vs Deep Blue 6경기 PGN
 ├── stockfish/             # Stockfish 바이너리 (별도 다운로드 필요)
 ├── main.py                # CLI 진입점
-├── requirements.txt
-└── .gitignore
+├── requirements.txt       # 서버/배포용 의존성
+├── requirements-local.txt # 로컬 GUI 포함 의존성
+└── render.yaml            # Render 배포 설정
 ```
 
 ---
 
-## 핵심 알고리즘
+## 핵심 알고리즘 (engine/minimax.py)
 
 ### 1. Negamax + Alpha-Beta Pruning
 
 기본 Minimax를 부호 통일 형태(Negamax)로 구현합니다.  
-Alpha-Beta Pruning으로 탐색 트리를 가지치기하여 평균 `O(b^(d/2))`로 줄입니다.
+Alpha-Beta Pruning으로 탐색 트리를 가지치기해 평균 `O(b^(d/2))`로 줄입니다.
 
 ```
 negamax(board, depth, α, β):
@@ -66,63 +74,198 @@ negamax(board, depth, α, β):
     return α
 ```
 
-### 2. Iterative Deepening (ID) + Aspiration Windows
+### 2. Principal Variation Search (PVS)
 
-깊이 1부터 시작해 반복적으로 깊이를 늘립니다.  
+첫 번째 수는 전체 창 `[-β, -α]`으로 탐색하고, 이후 수들은 **null window** `[-α-1, -α]`로 탐색합니다.  
+null window 탐색이 alpha를 넘으면 전체 창으로 재탐색합니다.  
+→ 같은 품질, 더 적은 노드 탐색.
+
+```
+if move_idx == 0:
+    score = -negamax(depth-1, -β, -α)      # full window
+else:
+    score = -negamax(depth-1, -α-1, -α)    # null window
+    if score > α:
+        score = -negamax(depth-1, -β, -α)  # re-search
+```
+
+### 3. Iterative Deepening (ID) + Aspiration Windows
+
+깊이 1부터 반복적으로 늘립니다.  
 이전 반복의 점수를 중심으로 좁은 탐색 창(±50cp)을 설정해 더 많은 가지치기를 유도합니다.  
 창 밖으로 점수가 벗어나면 전체 창으로 재탐색합니다.
 
-### 3. Quiescence Search
+### 4. Check Extension
 
-수평선 효과(Horizon Effect)를 방지하기 위해 depth=0에 도달하면 캡처 무브만 계속 탐색합니다.  
-Stand-pat 점수로 하한을 잡고 Delta Pruning으로 불필요한 캡처를 건너뜁니다.
+체크 상황에서 `depth == 0`에 도달하면 `depth = 1`로 연장합니다.  
+→ 체크메이트 패턴, 포크, 핀 등 전술적 수순을 놓치지 않도록 방지합니다.
 
-### 4. Transposition Table
+```
+if in_check and depth <= 0:
+    depth = 1   # extend: don't enter quiescence while in check
+```
 
-`chess.polyglot.zobrist_hash`로 포지션을 해싱해 캐싱합니다.  
-`TT_EXACT / TT_LOWER / TT_UPPER` 플래그로 정확한 재사용 조건을 관리합니다.
+### 5. Quiescence Search + Delta Pruning
 
-### 5. Move Ordering
+수평선 효과(Horizon Effect)를 방지하기 위해 `depth == 0`에서 캡처·프로모션만 계속 탐색합니다.  
+Stand-pat 점수로 하한을 잡고, **Delta Pruning**으로 alpha를 회복할 수 없는 캡처를 건너뜁니다.
+
+```
+stand_pat = evaluate(board)
+if stand_pat + piece_value + 200 <= alpha: skip  # delta pruning
+```
+
+### 6. Transposition Table (TT)
+
+`chess.polyglot.zobrist_hash`로 포지션을 해싱해 이전 탐색 결과를 재사용합니다.
+
+| 플래그 | 의미 |
+|--------|------|
+| `TT_EXACT` | 정확한 점수 |
+| `TT_LOWER` | beta cutoff 발생 — 하한값 |
+| `TT_UPPER` | alpha 갱신 실패 — 상한값 |
+
+항상 최신 결과로 덮어씌우는 방식(always-replace). 최대 ~100만 항목.
+
+### 7. Late Move Reduction (LMR)
+
+log 기반 공식으로 뒤쪽의 조용한 무브를 깊이를 줄여 탐색합니다.  
+alpha를 넘으면 전체 깊이로 재탐색합니다.
+
+```
+reduction = max(1, int(√(depth-1) × √moves_searched))
+```
+
+- `depth < 3` 또는 앞쪽 4수는 적용 안 함
+- 캡처, 프로모션, 체크 주는 수, 체크 중인 수는 적용 안 함
+
+### 8. Null Move Pruning (NMP)
+
+빈 수를 두어도 beta cutoff가 발생하면, 실제 수를 두면 더 좋다는 가정으로 조기 반환합니다.  
+Zugzwang 방지를 위해 주요 기물(Q·R·B·N) 2개 이상일 때만 적용합니다.
+
+```
+감소량 R = 3 (depth ≥ 6)  /  R = 2 (depth < 6)
+```
+
+### 9. Futility Pruning
+
+depth 1~2에서 정적 평가 + 마진이 alpha 이하면 조용한 무브를 건너뜁니다.
+
+| depth | 마진 |
+|-------|------|
+| 1 | 100 cp |
+| 2 | 300 cp |
+
+---
+
+## 무브 정렬 (engine/move_ordering.py)
 
 좋은 무브를 먼저 탐색할수록 Alpha-Beta 가지치기 효율이 올라갑니다.
 
 | 우선순위 | 기법 | 설명 |
 |----------|------|------|
-| 1 | PV Move | 이전 반복에서 최선으로 찾은 수 |
-| 2 | Winning Captures | MVV-LVA: 가장 값진 기물을 가장 싼 기물로 잡기 |
-| 3 | Check-giving Moves | 체크 수는 강제적 특성상 먼저 탐색 |
-| 4 | Killer Moves | 같은 깊이에서 beta-cutoff를 일으킨 조용한 수 |
-| 5 | History Heuristic | 과거에 cutoff를 일으킨 빈도 기반 점수 |
-
-### 6. Late Move Reduction (LMR)
-
-이동 순서 후반부의 조용한 무브는 깊이를 줄여 탐색하고, alpha를 넘으면 전체 깊이로 재탐색합니다.
-
-### 7. Null Move Pruning (NMP)
-
-빈 수를 두어도 beta cutoff가 발생하면 실제 수를 두면 더 좋다는 가정으로 조기 반환합니다.  
-Zugzwang 방지를 위해 주요 기물이 2개 이상일 때만 적용합니다.
-
-### 8. Futility Pruning
-
-depth 1~2에서 정적 평가 + 마진이 여전히 alpha 이하이면 조용한 무브를 건너뜁니다.
+| 1 | **PV Move** | 이전 반복의 TT에서 찾은 최선 수 |
+| 2 | **Winning Captures** | MVV-LVA: 비싼 기물을 싼 기물로 잡기 (`victim×10 - attacker`) |
+| 3 | **Promotions** | 퀸 프로모션 우선 |
+| 4 | **Check-giving Moves** | 체크 수는 강제적 특성상 먼저 탐색 |
+| 5 | **Killer Moves** | 같은 깊이에서 beta cutoff를 일으킨 조용한 수 (최대 2개) |
+| 6 | **History Heuristic** | 과거 beta cutoff 빈도 기반 (`depth²` 가중치) |
 
 ---
 
-## 평가 함수 (evaluation.py)
+## 평가 함수 (engine/evaluation.py)
 
-| 컴포넌트 | 설명 |
-|----------|------|
-| **기물 가중치** | P=100, N=320, B=330, R=500, Q=900 cp |
-| **Piece-Square Table** | 기물 종류별 위치 보너스 (Middlegame/Endgame 테이퍼드 적용) |
-| **게임 페이즈** | 남은 주요 기물 수로 0.0(미들)~1.0(엔드) 계산, PST·킹 가중치 보간 |
-| **폰 구조** | 이중폰(-20), 고립폰(-30), 패스트폰(+10~+120 승급 기준) |
-| **킹 안전** | 미들게임: 폰 방패·오픈 파일 페널티 / 엔드게임: 중앙 접근 보너스 |
-| **모빌리티** | 공격 가능 칸 수(자기 기물 제외) × 2cp |
+모든 점수는 **White 관점 centipawns** 기준. 양수 = 백 유리.
+
+### 기물 가중치
+
+| 기물 | 가치 |
+|------|------|
+| 폰 (P) | 100 cp |
+| 나이트 (N) | 320 cp |
+| 비숍 (B) | 330 cp |
+| 룩 (R) | 500 cp |
+| 퀸 (Q) | 900 cp |
+
+### Piece-Square Table (PST) + 테이퍼드 평가
+
+기물마다 위치 보너스 테이블을 갖습니다.  
+게임 페이즈(0.0=미들, 1.0=엔드)에 따라 MG/EG 테이블을 선형 보간합니다.
+
+```python
+score = mg_value × (1 - phase) + eg_value × phase
+```
+
+| 기물 | MG 테이블 | EG 테이블 |
+|------|-----------|-----------|
+| 폰 | 중앙 전진, 전방 지향 | 승진 가까울수록 높은 점수 |
+| 나이트 | 중앙 선호, 가장자리 패널티 | 동일 |
+| 비숍 | 대각선 활동 우선 | 동일 |
+| 룩 | 7랭크, 중앙 파일 | 동일 |
+| 퀸 | 조기 전개 억제 | 동일 |
+| 킹 | 캐슬링 후 코너 안전 | 중앙 집중 보너스 |
+
+### 게임 페이즈
+
+남은 주요 기물(Q·R·B·N)의 수로 0.0~1.0 계산합니다.
+
+```
+phase = 1.0 - (현재 기물 가중치 합 / 24)
+Q=4, R=2, B=1, N=1 기준 (최대 합 = 24)
+```
+
+### 폰 구조
+
+| 항목 | 패널티/보너스 |
+|------|-------------|
+| 이중 폰 (Doubled) | -20 cp |
+| 고립 폰 (Isolated) | -30 cp |
+| 백워드 폰 (Backward) | -20 cp (앞길이 막히고 뒤 지원 없음) |
+| 패스트 폰 (Passed) | +10 ~ +120 cp (랭크에 따라 증가) |
+
+### 비숍 쌍 보너스
+
+양색 비숍(밝은칸 + 어두운칸) 모두 보유 시 **+50 cp**  
+오픈 포지션에서 비숍 쌍은 강력한 전략적 이점입니다.
+
+### 룩 보너스
+
+| 항목 | 보너스 |
+|------|--------|
+| 오픈 파일 (양쪽 폰 없음) | +25 cp |
+| 세미오픈 파일 (자기 폰 없음) | +12 cp |
+| 7랭크 (흑은 2랭크) 진출 | +25 cp |
+
+### 킹 안전
+
+| 단계 | 평가 방식 |
+|------|----------|
+| 미들게임 | 킹 주변 폰 방패 보너스, 킹 인근 오픈 파일 패널티 |
+| 엔드게임 | 킹이 중앙에 가까울수록 보너스 |
+
+### 모빌리티
+
+나이트·비숍·룩·퀸이 공격 가능한 칸 수 × **2 cp**  
+(자기 기물 점령 칸 제외)
 
 ---
 
-## 비교 방식 (Comparator)
+## 비교 방식 (analysis/)
+
+### PGN 파싱 (pgn_parser.py)
+
+1997 Kasparov vs Deep Blue 6경기 PGN 파일을 파싱해 포지션을 추출합니다.
+
+**게임 페이즈 기준:**
+
+| 구분 | 기준 | 근거 |
+|------|------|------|
+| 오프닝 (제외) | move < 15 | 딥블루도 오프닝 북 사용 → 알고리즘 비교 무의미 |
+| 미들게임 | move ≥ 15, 주요 기물 > 6 | 양쪽 전개 완료, 포지셔널 판단 시작 |
+| 엔드게임 | move ≥ 15, 주요 기물 ≤ 6 | Q·R·B·N 합계 기준 |
+
+### 비교 로직 (comparator.py)
 
 ```
 for position in deep_blue_games[move >= 15]:
@@ -132,53 +275,74 @@ for position in deep_blue_games[move >= 15]:
     our_score = Stockfish.eval(position + our_move)   # centipawns
     db_score  = Stockfish.eval(position + db_move)
 
-    if our_score - db_score > 10cp: → 우리 승
-    elif db_score - our_score > 10cp: → 딥블루 승
-    else: → 동점
+    delta = our_score - db_score
+    if delta > 10cp  → 우리 승
+    if delta < -10cp → 딥블루 승
+    else             → 동점
 ```
-
-### 미들/엔드게임 기준
-
-| 구분 | 기준 | 근거 |
-|------|------|------|
-| **오프닝** | move < 15 | 딥블루도 오프닝 북 사용, 알고리즘 비교 무의미 |
-| **미들게임** | move ≥ 15, 주요기물 > 6 | 양쪽 전개 완료, 포지셔널 판단 시작 |
-| **엔드게임** | move ≥ 15, 주요기물 ≤ 6 | Q·R·B·N 합계 |
 
 ---
 
-## 설치 및 실행
+## 실행 모드 (main.py)
 
-### 1. 의존성 설치
+### 1. 딥블루 기보 비교
 
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Stockfish 설치
-
-[https://stockfishchess.org/download/](https://stockfishchess.org/download/) 에서 다운로드 후  
-`stockfish/` 디렉토리에 바이너리를 배치하세요.
-
-### 3. 실행
-
-**딥블루 기보 비교 (전체):**
 ```bash
 python main.py compare
-python main.py compare --depth 5 --verbose --output results.csv
+python main.py compare --depth 5 --time 3.0 --verbose --output results.csv
+python main.py compare --charts output/   # 비교 후 차트도 생성
 ```
 
-**단일 FEN 분석:**
+### 2. 결과 시각화
+
+```bash
+python main.py visualize --csv results.csv           # 창에 표시
+python main.py visualize --csv results.csv --charts output/  # 파일로 저장
+```
+
+### 3. 단일 FEN 분석
+
 ```bash
 python main.py analyze --fen "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4"
+python main.py analyze --fen "..." --depth 6 --time 10
 ```
 
-**인터랙티브 모드:**
+출력: 엔진의 최선 수 + 점수 + (Stockfish 참고 평가)
+
+### 4. 인터랙티브 CLI 모드
+
 ```bash
 python main.py play
+python main.py play --depth 5 --time 5.0
 ```
 
-### CLI 옵션
+FEN을 입력하면 엔진이 최선 수를 제안합니다.
+
+### 5. Pygame GUI (사람 vs 엔진)
+
+```bash
+python main.py play-human                  # 백으로 플레이
+python main.py play-human --color black    # 흑으로 플레이
+python main.py play-human --depth 5 --time 5.0
+```
+
+**키 조작:**
+
+| 키 | 기능 |
+|----|------|
+| 클릭 | 기물 선택 / 이동 |
+| `R` | 새 게임 |
+| `F` | 보드 뒤집기 |
+| `S` | 평가 점수 바 켜기/끄기 |
+| `Q` / `Esc` | 종료 |
+
+**평가 점수 바:**
+- 패널 상단에 흰색/검정 비율로 현재 유불리를 시각화
+- 숫자: `+2.15` = 백이 2.15폰 유리, `-1.30` = 흑이 유리
+- 체크메이트 예상 시 `M4` 형태로 표시
+- 엔진 수 후: 탐색 점수(더 정확) / 사람 수 후: 정적 평가
+
+### CLI 공통 옵션
 
 | 옵션 | 기본값 | 설명 |
 |------|--------|------|
@@ -187,6 +351,64 @@ python main.py play
 | `--stockfish PATH` | 자동 탐지 | Stockfish 바이너리 경로 |
 | `--verbose` | False | 포지션별 상세 출력 |
 | `--output FILE` | None | CSV 결과 저장 |
+
+---
+
+## 웹 인터페이스 (web/)
+
+Flask 백엔드 + chessboard.js 프론트엔드로 구성된 웹 체스 UI입니다.
+
+### 로컬 실행
+
+```bash
+python web/app.py
+# → http://localhost:5000
+```
+
+### API 엔드포인트
+
+| Method | Endpoint | 설명 |
+|--------|----------|------|
+| `GET` | `/` | 웹 UI 서빙 |
+| `POST` | `/api/new_game` | 새 게임 시작 `{"player_color": "white"\|"black"}` |
+| `POST` | `/api/move` | 사람 수 전송 `{"move": "e2e4"}` (UCI 형식) |
+| `GET` | `/api/state` | 현재 보드 상태 조회 |
+
+### 웹 UI 기능
+
+- 드래그&드롭 기물 이동
+- 폰 프로모션 팝업 (퀸/룩/비숍/나이트 선택)
+- 엔진 생각 중 애니메이션
+- 무브 히스토리 (SAN 표기)
+- 현재 차례 표시
+
+### 배포 (Render)
+
+```bash
+# render.yaml 설정 기준
+Start Command: gunicorn web.app:app
+```
+
+---
+
+## 설치 및 실행
+
+### 1. 의존성 설치
+
+```bash
+# 서버/비교 분석용 (배포 환경)
+pip install -r requirements.txt
+
+# 로컬 GUI 포함 (play-human 모드 필요)
+pip install -r requirements-local.txt
+```
+
+### 2. Stockfish 설치 (비교 모드 필요)
+
+[https://stockfishchess.org/download/](https://stockfishchess.org/download/) 에서 다운로드 후  
+`stockfish/` 디렉토리에 바이너리를 배치하세요.
+
+> 웹 모드(`web/app.py`)와 GUI 모드(`play-human`)는 Stockfish 없이 동작합니다.
 
 ---
 
@@ -208,45 +430,28 @@ python main.py play
 
 ## 알고리즘 수업 연관성
 
-딥블루가 채택한 핵심 기법과의 대응:
+딥블루가 채택한 핵심 기법과 Deeper-Blue의 대응:
 
-| 딥블루 | Deeper-Blue |
-|--------|-------------|
-| Minimax + Alpha-Beta | Negamax + Alpha-Beta (fail-soft) |
-| Iterative Deepening | + Aspiration Windows |
-| Principal Variation Search | PVS — null window after first move |
-| Check Extension | 체크 상황에서 depth+1 확장 (전술 놓침 방지) |
-| Quiescence Search | + Delta Pruning |
-| Transposition Table | Zobrist Hashing (polyglot) |
-| Move Ordering | MVV-LVA + Killer + History + Check bonus |
-| Null Move Pruning | 적응형 R (depth≥6 → R=3, else R=2) |
-| Late Move Reduction | log 기반 공식: √(depth-1)×√moves |
-| Futility Pruning | depth 1~2 |
-| Evaluation Function | Material + PST + Pawn + Bishop pair + Rook bonuses + King safety + Mobility |
-| Opening Book | 미사용 (move 15 이후만 비교) |
-| Endgame Tablebase | 향후 추가 가능 |
-
----
-
-## 평가 함수 상세 (evaluation.py)
-
-| 컴포넌트 | 설명 |
-|----------|------|
-| **기물 가중치** | P=100, N=320, B=330, R=500, Q=900 cp |
-| **Piece-Square Table** | 기물 종류별 위치 보너스 (Middlegame/Endgame 테이퍼드 적용) |
-| **게임 페이즈** | 남은 주요 기물 수로 0.0(미들)~1.0(엔드) 계산 |
-| **폰 구조** | 이중폰(-20), 고립폰(-30), **백워드폰(-20)**, 패스트폰(+10~+120) |
-| **비숍 쌍** | 양색 비숍 보유 시 +50cp (오픈 포지션에서 강력) |
-| **룩 오픈 파일** | 오픈 파일 +25cp, 세미오픈 파일 +12cp |
-| **룩 7랭크** | 7랭크(흑은 2랭크) 진출 시 +25cp |
-| **킹 안전** | 미들게임: 폰 방패·오픈 파일 페널티 / 엔드게임: 중앙 접근 보너스 |
-| **모빌리티** | 공격 가능 칸 수 × 2cp |
+| 딥블루 | Deeper-Blue | 구현 위치 |
+|--------|-------------|----------|
+| Minimax + Alpha-Beta | Negamax + Alpha-Beta (fail-soft) | `minimax.py` |
+| Principal Variation Search | PVS — null window after first move | `minimax.py` |
+| Iterative Deepening | + Aspiration Windows (±50cp) | `minimax.py` |
+| Check Extension | depth=0에서 체크 시 depth=1 연장 | `minimax.py` |
+| Quiescence Search | + Delta Pruning (200cp margin) | `minimax.py` |
+| Transposition Table | Zobrist Hashing (polyglot), always-replace | `minimax.py` |
+| Move Ordering | PV + MVV-LVA + Check + Killer + History | `move_ordering.py` |
+| Null Move Pruning | 적응형 R=2/3, major piece guard | `minimax.py` |
+| Late Move Reduction | log 기반: √(d-1)×√moves | `minimax.py` |
+| Futility Pruning | depth 1~2, margin 100/300 cp | `minimax.py` |
+| Evaluation Function | Material + PST + Pawn + Bishop pair + Rook + King + Mobility | `evaluation.py` |
+| Opening Book | 미사용 (move 15 이후만 비교) | — |
+| Endgame Tablebase | 미구현 (향후 추가 가능) | — |
 
 ---
 
 ## 향후 계획
 
-- [ ] Stockfish / 다른 오픈소스 엔진과 직접 대결
-- [ ] Endgame Tablebase 연동
 - [ ] SEE (Static Exchange Evaluation) 기반 캡처 필터링
-- [ ] 웹 UI에서 FEN 입력 및 시각적 결과 확인
+- [ ] Endgame Tablebase 연동
+- [ ] 웹 UI 평가 점수 바 추가
