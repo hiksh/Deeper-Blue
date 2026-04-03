@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: deeper-blue
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn web.app:app
+    envVars:
+      - key: ENGINE_DEPTH
+        value: "4"
+      - key: ENGINE_TIME
+        value: "5"
+      - key: SECRET_KEY
+        generateValue: true

@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Output files
+*.csv
+*.log
+output/
+
+# Flask
+instance/
+.env
+.flaskenv
+
+# Stockfish (do not commit binaries)
+stockfish/*.exe
+stockfish/stockfish
+stockfish/stockfish-*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Deeper-Blue Chess</title>
+
+  <!-- chessboard.js -->
+  <link rel="stylesheet"
+        href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"/>
+  <!-- jQuery (required by chessboard.js) -->
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <!-- chess.js (move validation / FEN) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+  <!-- chessboard.js -->
+  <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+
+  <style>
+    /* ── Reset & base ───────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    /* ── Header ─────────────────────────────────── */
+    header {
+      width: 100%;
+      background: #16213e;
+      border-bottom: 2px solid #0f3460;
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    header h1 {
+      font-size: 1.5rem;
+      color: #e94560;
+      letter-spacing: 2px;
+    }
+    header span.sub {
+      font-size: 0.85rem;
+      color: #888;
+    }
+
+    /* ── Main layout ─────────────────────────────── */
+    main {
+      display: flex;
+      gap: 28px;
+      padding: 28px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    /* ── Board column ────────────────────────────── */
+    #board-col { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+    #board { width: 480px; }
+
+    /* Player label above/below board */
+    .player-label {
+      width: 480px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.9rem;
+      padding: 6px 10px;
+      background: #16213e;
+      border-radius: 6px;
+    }
+    .player-label .dot {
+      width: 12px; height: 12px; border-radius: 50%;
+      display: inline-block;
+    }
+    .dot-white { background: #f0f0f0; border: 1px solid #666; }
+    .dot-black { background: #222;    border: 1px solid #ccc; }
+    .active-turn { border: 2px solid #e94560; }
+
+    /* ── Side panel ──────────────────────────────── */
+    #panel {
+      width: 300px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .card {
+      background: #16213e;
+      border: 1px solid #0f3460;
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .card h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #888;
+      margin-bottom: 12px;
+    }
+
+    /* Setup card */
+    .setup-row { display: flex; flex-direction: column; gap: 8px; }
+    .setup-row label { font-size: 0.85rem; color: #aaa; }
+    .setup-row select, .setup-row button {
+      width: 100%;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid #0f3460;
+      background: #0f3460;
+      color: #e0e0e0;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    #btn-new {
+      background: #e94560;
+      border-color: #e94560;
+      font-weight: bold;
+      letter-spacing: 1px;
+      margin-top: 4px;
+      transition: opacity 0.2s;
+    }
+    #btn-new:hover { opacity: 0.85; }
+
+    /* Status card */
+    #status-text {
+      font-size: 1rem;
+      font-weight: bold;
+      color: #e94560;
+      min-height: 24px;
+    }
+    #engine-indicator {
+      font-size: 0.8rem;
+      color: #aaa;
+      margin-top: 4px;
+      min-height: 16px;
+    }
+    .thinking-dots::after {
+      content: '';
+      animation: dots 1.2s steps(3, end) infinite;
+    }
+    @keyframes dots {
+      0%   { content: '.';   }
+      33%  { content: '..';  }
+      66%  { content: '...'; }
+      100% { content: '';    }
+    }
+
+    /* Move history */
+    #move-history {
+      font-family: 'Consolas', monospace;
+      font-size: 0.82rem;
+      max-height: 240px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .move-pair {
+      display: grid;
+      grid-template-columns: 28px 1fr 1fr;
+      gap: 4px;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+    .move-pair:last-child { background: #0f3460; }
+    .move-num  { color: #666; }
+    .move-w    { color: #e0e0e0; }
+    .move-b    { color: #aaa; }
+
+    /* Last move flash */
+    .highlight-last {
+      background: rgba(233, 69, 96, 0.25) !important;
+    }
+
+    /* Promotion modal */
+    #promo-modal {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 999;
+      align-items: center;
+      justify-content: center;
+    }
+    #promo-modal.show { display: flex; }
+    .promo-box {
+      background: #16213e;
+      border: 2px solid #0f3460;
+      border-radius: 12px;
+      padding: 24px;
+      text-align: center;
+    }
+    .promo-box h3 { margin-bottom: 16px; color: #e0e0e0; }
+    .promo-pieces { display: flex; gap: 16px; justify-content: center; }
+    .promo-btn {
+      font-size: 2.5rem;
+      background: none;
+      border: 2px solid #0f3460;
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .promo-btn:hover { border-color: #e94560; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: #0f3460; }
+    ::-webkit-scrollbar-thumb { background: #e94560; border-radius: 4px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>DEEPER-BLUE</h1>
+  <span class="sub">Algorithm-based chess engine — beat Deep Blue 1997</span>
+</header>
+
+<main>
+  <!-- Board column -->
+  <div id="board-col">
+    <div class="player-label" id="label-top">
+      <span class="dot dot-black"></span>
+      <span id="label-top-text">Deep Blue (Black)</span>
+    </div>
+    <div id="board"></div>
+    <div class="player-label" id="label-bottom">
+      <span class="dot dot-white"></span>
+      <span id="label-bottom-text">You (White)</span>
+    </div>
+  </div>
+
+  <!-- Side panel -->
+  <div id="panel">
+
+    <!-- Setup -->
+    <div class="card">
+      <h2>New Game</h2>
+      <div class="setup-row">
+        <label for="color-select">Play as</label>
+        <select id="color-select">
+          <option value="white">White (moves first)</option>
+          <option value="black">Black</option>
+        </select>
+        <button id="btn-new">▶ START GAME</button>
+      </div>
+    </div>
+
+    <!-- Status -->
+    <div class="card">
+      <h2>Status</h2>
+      <div id="status-text">Press START GAME</div>
+      <div id="engine-indicator"></div>
+    </div>
+
+    <!-- Move history -->
+    <div class="card">
+      <h2>Move History</h2>
+      <div id="move-history"></div>
+    </div>
+
+  </div>
+</main>
+
+<!-- Promotion modal -->
+<div id="promo-modal">
+  <div class="promo-box">
+    <h3>Promote pawn to:</h3>
+    <div class="promo-pieces">
+      <button class="promo-btn" data-piece="q">♛</button>
+      <button class="promo-btn" data-piece="r">♜</button>
+      <button class="promo-btn" data-piece="b">♝</button>
+      <button class="promo-btn" data-piece="n">♞</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ────────────────────────────────────────────────────────────────
+let game        = new Chess();
+let board       = null;
+let playerColor = 'white';
+let gameActive  = false;
+let pendingPromo = null;   // { from, to } awaiting promotion choice
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+function colorName(c) { return c === 'w' ? 'white' : 'black'; }
+
+function setStatus(text, thinking = false) {
+  document.getElementById('status-text').textContent = text;
+  const ind = document.getElementById('engine-indicator');
+  if (thinking) {
+    ind.textContent = 'Engine thinking';
+    ind.classList.add('thinking-dots');
+  } else {
+    ind.textContent = '';
+    ind.classList.remove('thinking-dots');
+  }
+}
+
+function updateLabels() {
+  const humanSide  = playerColor;
+  const engineSide = playerColor === 'white' ? 'black' : 'white';
+  const isFlipped  = playerColor === 'black';
+
+  const topSide    = isFlipped ? humanSide  : engineSide;
+  const bottomSide = isFlipped ? engineSide : humanSide;
+
+  document.getElementById('label-top-text').textContent =
+    topSide === playerColor ? `You (${cap(topSide)})` : `Deeper-Blue (${cap(topSide)})`;
+  document.getElementById('label-bottom-text').textContent =
+    bottomSide === playerColor ? `You (${cap(bottomSide)})` : `Deeper-Blue (${cap(bottomSide)})`;
+
+  // Active turn indicator
+  const bottomLabel = document.getElementById('label-bottom');
+  const topLabel    = document.getElementById('label-top');
+  bottomLabel.classList.toggle('active-turn', game.turn() === (playerColor === 'white' ? 'w' : 'b'));
+  topLabel.classList.toggle('active-turn',    game.turn() !== (playerColor === 'white' ? 'w' : 'b'));
+}
+
+function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+function renderHistory(moveHistory) {
+  const el = document.getElementById('move-history');
+  el.innerHTML = '';
+  for (let i = 0; i < moveHistory.length; i += 2) {
+    const num  = Math.floor(i / 2) + 1;
+    const wSan = moveHistory[i]   || '';
+    const bSan = moveHistory[i+1] || '';
+    const row  = document.createElement('div');
+    row.className = 'move-pair';
+    row.innerHTML =
+      `<span class="move-num">${num}.</span>` +
+      `<span class="move-w">${wSan}</span>` +
+      `<span class="move-b">${bSan}</span>`;
+    el.appendChild(row);
+  }
+  el.scrollTop = el.scrollHeight;
+}
+
+function applyServerState(state) {
+  game.load(state.fen);
+  board.position(state.fen, false);
+  renderHistory(state.move_history);
+  updateLabels();
+
+  const s = state.status;
+  if (s === 'playing') {
+    if (state.turn === playerColor) {
+      setStatus(state.in_check ? 'Your turn — CHECK!' : 'Your turn');
+    } else {
+      setStatus('Engine\'s turn', true);
+    }
+  } else if (s.startsWith('checkmate')) {
+    const winner = s.split(':')[1];
+    setStatus(winner === playerColor ? '🎉 You win!' : '💀 Deeper-Blue wins!');
+    gameActive = false;
+  } else if (s.startsWith('draw')) {
+    const reason = s.split(':')[1].replace('_', ' ');
+    setStatus(`Draw — ${reason}`);
+    gameActive = false;
+  }
+}
+
+// ── New Game ─────────────────────────────────────────────────────────────
+document.getElementById('btn-new').addEventListener('click', async () => {
+  playerColor = document.getElementById('color-select').value;
+  setStatus('Starting…');
+  gameActive = false;
+
+  const res  = await fetch('/api/new_game', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ player_color: playerColor }),
+  });
+  const data = await res.json();
+  if (!data.ok) { setStatus('Error: ' + data.error); return; }
+
+  // Re-init board orientation
+  board.destroy();
+  board = Chessboard('board', boardConfig(playerColor));
+
+  gameActive = true;
+  applyServerState(data.state);
+  if (data.state.engine_move) {
+    setStatus(data.state.turn === playerColor ? 'Your turn' : 'Engine\'s turn');
+  }
+});
+
+// ── Board drag/drop ──────────────────────────────────────────────────────
+function onDragStart(source, piece) {
+  if (!gameActive) return false;
+  if (game.game_over()) return false;
+  // Only allow moving own pieces
+  const myColor = playerColor === 'white' ? 'w' : 'b';
+  if (piece.charAt(0) !== myColor) return false;
+  if (game.turn() !== myColor) return false;
+  return true;
+}
+
+function onDrop(source, target) {
+  if (source === target) return 'snapback';
+  if (!gameActive)       return 'snapback';
+
+  // Check if promotion needed
+  const piece    = game.get(source);
+  const toRank   = target.charAt(1);
+  const isPromo  = piece && piece.type === 'p' &&
+                   ((piece.color === 'w' && toRank === '8') ||
+                    (piece.color === 'b' && toRank === '1'));
+
+  // Test move legality (without promotion first)
+  const legalMoves = game.moves({ square: source, verbose: true });
+  const isLegal    = legalMoves.some(m => m.to === target);
+  if (!isLegal) return 'snapback';
+
+  if (isPromo) {
+    pendingPromo = { from: source, to: target };
+    showPromoModal(playerColor === 'white' ? '♛♜♝♞' : '♕♖♗♘');
+    return 'snapback';   // board will be updated after choice
+  }
+
+  sendMove(source + target);
+}
+
+function onSnapEnd() { board.position(game.fen()); }
+
+function boardConfig(orientation) {
+  return {
+    draggable:     true,
+    position:      'start',
+    orientation:   orientation,
+    onDragStart:   onDragStart,
+    onDrop:        onDrop,
+    onSnapEnd:     onSnapEnd,
+    pieceTheme:    'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png',
+    appearSpeed:   100,
+    moveSpeed:     150,
+    snapbackSpeed: 100,
+  };
+}
+
+// ── Promotion modal ──────────────────────────────────────────────────────
+function showPromoModal() {
+  // Update piece color for modal icons based on player
+  const pieces = playerColor === 'white'
+    ? ['♕','♖','♗','♘']
+    : ['♛','♜','♝','♞'];
+  const btns = document.querySelectorAll('.promo-btn');
+  btns.forEach((btn, i) => btn.textContent = pieces[i]);
+  document.getElementById('promo-modal').classList.add('show');
+}
+
+document.querySelectorAll('.promo-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.getElementById('promo-modal').classList.remove('show');
+    if (pendingPromo) {
+      const uci = pendingPromo.from + pendingPromo.to + btn.dataset.piece;
+      pendingPromo = null;
+      sendMove(uci);
+    }
+  });
+});
+
+// ── Send move to server ───────────────────────────────────────────────────
+async function sendMove(uci) {
+  setStatus('Engine\'s turn', true);
+
+  const res  = await fetch('/api/move', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ move: uci }),
+  });
+  const data = await res.json();
+
+  if (!data.ok) {
+    setStatus('Error: ' + data.error);
+    board.position(game.fen());
+    return;
+  }
+
+  applyServerState(data.state);
+}
+
+// ── Init board ────────────────────────────────────────────────────────────
+board = Chessboard('board', boardConfig('white'));
+setStatus('Press START GAME');
+updateLabels();
+</script>
+</body>
+</html>
