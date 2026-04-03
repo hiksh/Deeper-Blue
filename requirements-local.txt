@@ -1,0 +1,3 @@
+# Local development only (GUI mode)
+-r requirements.txt
+pygame>=2.6
