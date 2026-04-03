@@ -193,15 +193,33 @@ python main.py play
 |--------|-------------|
 | Minimax + Alpha-Beta | Negamax + Alpha-Beta (fail-soft) |
 | Iterative Deepening | + Aspiration Windows |
+| Principal Variation Search | PVS — null window after first move |
+| Check Extension | 체크 상황에서 depth+1 확장 (전술 놓침 방지) |
 | Quiescence Search | + Delta Pruning |
 | Transposition Table | Zobrist Hashing (polyglot) |
 | Move Ordering | MVV-LVA + Killer + History + Check bonus |
-| Null Move Pruning | R=2, major piece guard |
-| Late Move Reduction | depth≥3, first 4 moves full |
+| Null Move Pruning | 적응형 R (depth≥6 → R=3, else R=2) |
+| Late Move Reduction | log 기반 공식: √(depth-1)×√moves |
 | Futility Pruning | depth 1~2 |
-| Evaluation Function | Material + PST + Pawn + King safety + Mobility |
+| Evaluation Function | Material + PST + Pawn + Bishop pair + Rook bonuses + King safety + Mobility |
 | Opening Book | 미사용 (move 15 이후만 비교) |
 | Endgame Tablebase | 향후 추가 가능 |
+
+---
+
+## 평가 함수 상세 (evaluation.py)
+
+| 컴포넌트 | 설명 |
+|----------|------|
+| **기물 가중치** | P=100, N=320, B=330, R=500, Q=900 cp |
+| **Piece-Square Table** | 기물 종류별 위치 보너스 (Middlegame/Endgame 테이퍼드 적용) |
+| **게임 페이즈** | 남은 주요 기물 수로 0.0(미들)~1.0(엔드) 계산 |
+| **폰 구조** | 이중폰(-20), 고립폰(-30), **백워드폰(-20)**, 패스트폰(+10~+120) |
+| **비숍 쌍** | 양색 비숍 보유 시 +50cp (오픈 포지션에서 강력) |
+| **룩 오픈 파일** | 오픈 파일 +25cp, 세미오픈 파일 +12cp |
+| **룩 7랭크** | 7랭크(흑은 2랭크) 진출 시 +25cp |
+| **킹 안전** | 미들게임: 폰 방패·오픈 파일 페널티 / 엔드게임: 중앙 접근 보너스 |
+| **모빌리티** | 공격 가능 칸 수 × 2cp |
 
 ---
 
@@ -209,6 +227,5 @@ python main.py play
 
 - [ ] Stockfish / 다른 오픈소스 엔진과 직접 대결
 - [ ] Endgame Tablebase 연동
-- [ ] 더 정교한 폰 구조 평가 (백워드 폰, 연결 폰)
-- [ ] Principal Variation Search (PVS)
+- [ ] SEE (Static Exchange Evaluation) 기반 캡처 필터링
 - [ ] 웹 UI에서 FEN 입력 및 시각적 결과 확인

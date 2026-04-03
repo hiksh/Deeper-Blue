@@ -6,10 +6,13 @@ Static board evaluation for the Deeper-Blue chess engine.
 Components:
   - Piece material values
   - Piece-Square Tables (PST) for positional bonuses
-  - Game phase detection (middlegame / endgame)
+  - Game phase detection (middlegame / endgame) with tapered evaluation
   - Mobility evaluation
-  - King safety
-  - Pawn structure (doubled, isolated, passed pawns)
+  - King safety (pawn shield, open files near king)
+  - Pawn structure (doubled, isolated, backward, passed pawns)
+  - Bishop pair bonus
+  - Rook on open / semi-open file bonus
+  - Rook on 7th rank bonus
 
 All scores are returned from White's perspective in centipawns.
 Call evaluate(board) for the final score; positive = White is better.
@@ -28,6 +31,16 @@ PIECE_VALUES = {
     chess.QUEEN:  900,
     chess.KING:   20000,
 }
+
+# Bonus for having the bishop pair (both light- and dark-squared bishops)
+BISHOP_PAIR_BONUS = 50
+
+# Rook file bonuses (centipawns)
+ROOK_OPEN_FILE_BONUS      = 25   # no pawns on the file
+ROOK_SEMI_OPEN_FILE_BONUS = 12   # only opponent pawns on the file
+
+# Rook on 7th rank (or 2nd for Black) — attacking pawns on their home rank
+ROOK_ON_7TH_BONUS = 25
 
 # ---------------------------------------------------------------------------
 # Piece-Square Tables (PST)
@@ -126,7 +139,6 @@ PST_KING_EG = [
 # fmt: on
 
 # PST lookup: piece_type -> (mg_table, eg_table)
-# If a piece has only one table, it's used for both phases.
 _PST = {
     chess.PAWN:   (PST_PAWN_MG,   PST_PAWN_EG),
     chess.KNIGHT: (PST_KNIGHT,     PST_KNIGHT),
@@ -145,7 +157,6 @@ def _pst_score(piece_type: int, square: int, color: chess.Color, phase: float) -
     For Black we mirror vertically (flip rank).
     """
     mg_table, eg_table = _PST[piece_type]
-    # Mirror square for Black (flip rank)
     idx = square if color == chess.WHITE else chess.square_mirror(square)
     mg = mg_table[idx]
     eg = eg_table[idx]
@@ -176,7 +187,6 @@ def get_phase(board: chess.Board) -> float:
     for piece_type in [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN]:
         phase += len(board.pieces(piece_type, chess.WHITE)) * PHASE_WEIGHTS[piece_type]
         phase += len(board.pieces(piece_type, chess.BLACK)) * PHASE_WEIGHTS[piece_type]
-    # Clamp and normalize: more pieces = closer to 0 (middlegame)
     phase = min(phase, TOTAL_PHASE)
     return 1.0 - (phase / TOTAL_PHASE)
 
@@ -190,8 +200,9 @@ def _pawn_structure_score(board: chess.Board, color: chess.Color) -> int:
     Penalizes:
       - Doubled pawns   (-20 per extra pawn on the same file)
       - Isolated pawns  (-30: no friendly pawn on adjacent files)
+      - Backward pawns  (-20: can't advance safely, no support behind)
     Rewards:
-      - Passed pawns    (+50 to +200 depending on rank)
+      - Passed pawns    (+10 to +120 depending on rank)
     """
     score = 0
     pawns = board.pieces(chess.PAWN, color)
@@ -210,8 +221,39 @@ def _pawn_structure_score(board: chess.Board, color: chess.Color) -> int:
 
         # Isolated pawns
         adjacent_files = {f - 1, f + 1} & set(range(8))
-        if not any(af in pawn_files for af in adjacent_files):
+        friendly_adjacent = any(af in pawn_files for af in adjacent_files)
+        if not friendly_adjacent:
             score -= 30
+
+        # Backward pawns:
+        # A pawn is backward if it cannot advance safely and no friendly pawn
+        # supports it from behind on adjacent files.
+        if color == chess.WHITE:
+            advance_rank = r + 1
+            behind_ranks = range(0, r)
+        else:
+            advance_rank = r - 1
+            behind_ranks = range(r + 1, 8)
+
+        if 0 <= advance_rank <= 7:
+            advance_sq = chess.square(f, advance_rank)
+            # Check if advance square is attacked by an opponent pawn
+            opp_attacks_advance = any(
+                chess.square_file(opp_sq) in adjacent_files
+                and chess.square_rank(opp_sq) == (advance_rank + (1 if color == chess.WHITE else -1))
+                for opp_sq in opp_pawns
+                if 0 <= chess.square_rank(opp_sq) <= 7
+            )
+            if opp_attacks_advance and not friendly_adjacent:
+                # No adjacent friendly pawns to support its advance
+                has_support_behind = any(
+                    chess.square_file(p) in adjacent_files
+                    and chess.square_rank(p) in behind_ranks
+                    for p in pawns
+                    if p != sq
+                )
+                if not has_support_behind:
+                    score -= 20
 
         # Passed pawns: no opponent pawns on same or adjacent files ahead
         if color == chess.WHITE:
@@ -225,9 +267,65 @@ def _pawn_structure_score(board: chess.Board, color: chess.Color) -> int:
             for opp_sq in opp_pawns
         )
         if is_passed:
-            # Bonus increases as pawn advances toward promotion
             advance = r if color == chess.WHITE else (7 - r)
             score += [0, 10, 20, 40, 60, 80, 120, 0][advance]
+
+    return score
+
+
+# ---------------------------------------------------------------------------
+# Bishop pair bonus
+# ---------------------------------------------------------------------------
+
+def _bishop_pair_score(board: chess.Board, color: chess.Color) -> int:
+    """
+    Award a bonus when a side has both the light- and dark-squared bishops.
+    The bishop pair coordinates well in open positions and is worth ~50cp.
+    """
+    bishops = list(board.pieces(chess.BISHOP, color))
+    if len(bishops) >= 2:
+        # Check that we have bishops on both light and dark squares
+        # Light square: (file + rank) % 2 == 1; dark: (file + rank) % 2 == 0
+        light = any((chess.square_file(sq) + chess.square_rank(sq)) % 2 == 1 for sq in bishops)
+        dark  = any((chess.square_file(sq) + chess.square_rank(sq)) % 2 == 0 for sq in bishops)
+        if light and dark:
+            return BISHOP_PAIR_BONUS
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Rook bonuses
+# ---------------------------------------------------------------------------
+
+def _rook_bonus_score(board: chess.Board, color: chess.Color) -> int:
+    """
+    Bonuses for rooks on:
+      - Open files  (no pawns of either color): +25cp per rook
+      - Semi-open files (no own pawns, but opponent has one): +12cp per rook
+      - 7th rank (2nd rank for Black): attacking opponent's pawns: +25cp per rook
+    """
+    score = 0
+    own_pawns   = board.pieces(chess.PAWN, color)
+    opp_pawns   = board.pieces(chess.PAWN, not color)
+    own_pawn_files = {chess.square_file(sq) for sq in own_pawns}
+    opp_pawn_files = {chess.square_file(sq) for sq in opp_pawns}
+
+    seventh_rank = 6 if color == chess.WHITE else 1  # rank index 0..7
+
+    for sq in board.pieces(chess.ROOK, color):
+        f = chess.square_file(sq)
+        r = chess.square_rank(sq)
+
+        # Rook on 7th rank
+        if r == seventh_rank:
+            score += ROOK_ON_7TH_BONUS
+
+        # Open / semi-open file
+        if f not in own_pawn_files:
+            if f not in opp_pawn_files:
+                score += ROOK_OPEN_FILE_BONUS       # fully open
+            else:
+                score += ROOK_SEMI_OPEN_FILE_BONUS  # semi-open
 
     return score
 
@@ -291,7 +389,6 @@ def _mobility_score(board: chess.Board, color: chess.Color) -> int:
     for piece_type in [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN]:
         for sq in board.pieces(piece_type, color):
             attacks = board.attacks(sq)
-            # Exclude squares occupied by own pieces
             available = attacks & ~chess.SquareSet(own_pieces)
             score += len(available) * 2
     return score
@@ -307,9 +404,16 @@ def evaluate(board: chess.Board) -> int:
     Returns centipawns from White's perspective.
     Positive  → White is better.
     Negative  → Black is better.
+
+    Components (per side):
+      Material + PST (tapered MG/EG)
+      Pawn structure (doubled, isolated, backward, passed)
+      Bishop pair bonus
+      Rook on open/semi-open file, 7th rank
+      King safety (pawn shield, open files, endgame centralization)
+      Mobility (attack squares for non-pawn, non-king pieces)
     """
     if board.is_checkmate():
-        # The side to move is in checkmate (they lost)
         return -30000 if board.turn == chess.WHITE else 30000
 
     if (
@@ -335,6 +439,8 @@ def evaluate(board: chess.Board) -> int:
 
         # Structural / positional bonuses
         side_score += _pawn_structure_score(board, color)
+        side_score += _bishop_pair_score(board, color)
+        side_score += _rook_bonus_score(board, color)
         side_score += _king_safety_score(board, color, phase)
         side_score += _mobility_score(board, color)
 
