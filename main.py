@@ -30,6 +30,7 @@ import chess
 from analysis.pgn_parser import parse_pgn_directory
 from analysis.comparator import Comparator, ComparisonReport, MoveComparison, find_stockfish
 from analysis.visualizer import plot_all
+from analysis.engine_match import EngineMatch
 from engine.minimax import SearchEngine
 
 
@@ -200,6 +201,56 @@ def cmd_play_human(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Sub-command: match
+# ---------------------------------------------------------------------------
+
+def cmd_match(args: argparse.Namespace) -> None:
+    """Play a match against an external UCI engine and report W/D/L."""
+    import os
+    if not os.path.isfile(args.opponent):
+        print(f"[ERROR] Opponent engine not found: {args.opponent}")
+        print("  Download Crafty: http://craftychess.com/")
+        print("  Or use Stockfish with --elo to simulate era-appropriate strength:")
+        print("    python main.py match --opponent stockfish/stockfish.exe --elo 2200")
+        sys.exit(1)
+
+    elo_str = f" (ELO {args.elo})" if args.elo else " (full strength)"
+    print(f"Opponent : {args.opponent}{elo_str}")
+    print(f"Games    : {args.games}  |  Depth: {args.depth}  |  Time/move: {args.time}s\n")
+
+    match = EngineMatch(
+        opponent_path=args.opponent,
+        n_games=args.games,
+        time_per_move=args.time,
+        depth=args.depth,
+        opponent_elo=args.elo,
+    )
+
+    result = match.play_match(verbose=True)
+    print()
+    print(result.summary())
+
+    if args.output:
+        _save_match_csv(result, args.output)
+        print(f"\nGame results saved to: {args.output}")
+
+
+def _save_match_csv(result, filepath: str) -> None:
+    import csv
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["game", "our_color", "result", "termination", "half_moves"])
+        for g in result.game_results:
+            writer.writerow([
+                g.game_number,
+                "white" if g.our_color else "black",
+                g.result,
+                g.termination,
+                g.half_moves,
+            ])
+
+
+# ---------------------------------------------------------------------------
 # Sub-command: play (CLI fallback)
 # ---------------------------------------------------------------------------
 
@@ -301,6 +352,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_human.add_argument("--time", type=float, default=5.0, metavar="SEC",
                           help="Engine time limit per move (default: 5.0)")
 
+    # --- match ---
+    p_match = sub.add_parser(
+        "match",
+        help="Play games against an external UCI engine (Crafty, limited Stockfish, etc.)",
+    )
+    p_match.add_argument("--opponent", required=True, metavar="PATH",
+                          help="Path to opponent UCI engine binary")
+    p_match.add_argument("--elo", type=int, default=None, metavar="N",
+                          help="Limit Stockfish opponent to this ELO (e.g. 2200 ≈ 1997-era)")
+    p_match.add_argument("--games", type=int, default=10, metavar="N",
+                          help="Number of games to play (default: 10)")
+    p_match.add_argument("--depth", type=int, default=4, metavar="N",
+                          help="Deeper-Blue search depth (default: 4)")
+    p_match.add_argument("--time", type=float, default=2.0, metavar="SEC",
+                          help="Time per move in seconds for both engines (default: 2.0)")
+    p_match.add_argument("--output", default=None, metavar="FILE",
+                          help="Save game-by-game results to CSV")
+
     return parser
 
 
@@ -314,6 +383,7 @@ def main() -> None:
         "analyze":    cmd_analyze,
         "play":       cmd_play,
         "play-human": cmd_play_human,
+        "match":      cmd_match,
     }
     dispatch[args.command](args)
 

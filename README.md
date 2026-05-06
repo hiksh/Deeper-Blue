@@ -39,6 +39,7 @@ Deeper-Blue/
 ├── analysis/
 │   ├── pgn_parser.py      # PGN → FEN 추출, 미들/엔드게임 분류
 │   ├── comparator.py      # 우리 수 vs 딥블루 수 → Stockfish 비교
+│   ├── engine_match.py    # 외부 UCI 엔진과 실제 게임 대전 (W/D/L 집계)
 │   └── visualizer.py      # 비교 결과 차트 생성
 ├── game/
 │   └── chess_gui.py       # Pygame GUI (사람 vs 엔진, 평가 바 포함)
@@ -166,11 +167,38 @@ depth 1~2에서 정적 평가 + 마진이 alpha 이하면 조용한 무브를 �
 | 우선순위 | 기법 | 설명 |
 |----------|------|------|
 | 1 | **PV Move** | 이전 반복의 TT에서 찾은 최선 수 |
-| 2 | **Winning Captures** | MVV-LVA: 비싼 기물을 싼 기물로 잡기 (`victim×10 - attacker`) |
-| 3 | **Promotions** | 퀸 프로모션 우선 |
-| 4 | **Check-giving Moves** | 체크 수는 강제적 특성상 먼저 탐색 |
-| 5 | **Killer Moves** | 같은 깊이에서 beta cutoff를 일으킨 조용한 수 (최대 2개) |
-| 6 | **History Heuristic** | 과거 beta cutoff 빈도 기반 (`depth²` 가중치) |
+| 2 | **Winning Captures** | SEE > 0: 교환 후 실제 이득이 나는 캡처 |
+| 3 | **Equal Captures** | SEE == 0: 등가 교환 |
+| 4 | **Promotions** | 퀸 프로모션 우선 |
+| 5 | **Check-giving Moves** | 체크 수는 강제적 특성상 먼저 탐색 |
+| 6 | **Killer Moves** | 같은 깊이에서 beta cutoff를 일으킨 조용한 수 (최대 2개) |
+| 7 | **History Heuristic** | 과거 beta cutoff 빈도 기반 (`depth²` 가중치) |
+| 8 | **Losing Captures** | SEE < 0: 손해 교환은 맨 마지막 탐색 |
+
+### SEE (Static Exchange Evaluation)
+
+캡처 수의 교환 연속을 시뮬레이션해 실제 손익을 계산합니다.  
+MVV-LVA는 첫 수만 보지만, SEE는 **재캡처까지 전부 고려**합니다.
+
+```
+예: 폰이 비숍 포획 (상대 룩이 지킴)
+  MVV-LVA → 이득처럼 보임 (victim 비숍 = 330)
+  SEE     → 330 - 100 = 230cp  (실제 이득, 정확)
+
+예: 퀸이 폰 포획 (상대 룩이 지킴)
+  MVV-LVA → 이득처럼 보임
+  SEE     → 100 - 900 < 0  → 손해, 맨 마지막으로 정렬
+```
+
+**gain[] 배열로 교환 시뮬레이션 후 역방향 전파:**
+
+```python
+gain[0] = value(captured_piece)   # 첫 포획 이득
+# 각 재캡처마다 gain[d] = value(piece_on_square)
+# 역방향 전파: gain[i] = max(gain[i] - gain[i+1], 0)  # 재캡처 거부 옵션
+```
+
+Quiescence Search에서도 `SEE < 0`인 캡처를 즉시 건너뛰어 손해 교환 탐색을 제거합니다.
 
 ---
 
@@ -237,6 +265,26 @@ Q=4, R=2, B=1, N=1 기준 (최대 합 = 24)
 | 세미오픈 파일 (자기 폰 없음) | +12 cp |
 | 7랭크 (흑은 2랭크) 진출 | +25 cp |
 
+### 아웃포스트 (Outpost)
+
+상대 폰이 공격할 수 없는 전진 거점에 위치한 나이트·비숍에 보너스를 부여합니다.
+
+| 조건 | 보너스 |
+|------|--------|
+| 나이트, 5랭크 이상, 상대 폰 공격 없음 | +25 cp |
+| 비숍, 5랭크 이상, 상대 폰 공격 없음 | +15 cp |
+| 위 조건 + 자기 폰이 아웃포스트 방어 | +15 cp 추가 |
+
+```
+예: 백 나이트 d5 (상대 폰 없음, 자기 폰 c4가 지킴)
+    → +25 + 15 = +40 cp
+```
+
+### 연결 룩 (Connected Rooks)
+
+두 룩이 같은 랭크 또는 파일에서 사이에 기물 없이 서로를 볼 수 있을 때 **+20 cp**.  
+`board.attacks(r1)`에 r2가 포함되는지로 판정 (중간 기물이 없으면 포함됨).
+
 ### 킹 안전
 
 | 단계 | 평가 방식 |
@@ -279,6 +327,21 @@ for position in deep_blue_games[move >= 15]:
     if delta > 10cp  → 우리 승
     if delta < -10cp → 딥블루 승
     else             → 동점
+```
+
+### 엔진 대전 (engine_match.py)
+
+기보 비교의 한계(포지션 고립 비교)를 보완하기 위해, 외부 UCI 엔진과 **실제 전 게임**을 플레이합니다.
+
+- Crafty 등 당대 수준의 오픈소스 엔진, 또는 ELO 제한 Stockfish 사용
+- 컬러를 교대로 N게임 진행 후 W/D/L 집계
+- 각 게임의 종료 사유(체크메이트, 스테일메이트, 반복 등) 함께 기록
+
+```
+for game in range(n_games):
+    our_color = WHITE if game % 2 == 0 else BLACK
+    play full game → SearchEngine vs opponent_engine
+    record win / draw / loss + termination
 ```
 
 ---
@@ -325,6 +388,45 @@ python main.py play-human                  # 백으로 플레이
 python main.py play-human --color black    # 흑으로 플레이
 python main.py play-human --depth 5 --time 5.0
 ```
+
+### 6. 엔진 대전 (UCI 엔진 vs Deeper-Blue)
+
+```bash
+# ELO 2200 제한 Stockfish 상대 10게임 (1990년대 수준 시뮬레이션)
+python main.py match --opponent stockfish/stockfish.exe --elo 2200 --games 10
+
+# Crafty 상대 (http://craftychess.com/ 에서 다운로드)
+python main.py match --opponent crafty.exe --games 20
+
+# 결과 CSV 저장
+python main.py match --opponent stockfish/stockfish.exe --elo 2200 --games 20 --output match.csv
+```
+
+**출력 예시:**
+```
+============================================================
+  DEEPER-BLUE vs stockfish (ELO 2200)
+============================================================
+  Games played : 10
+  Score        : 6.0/10  (4W / 4D / 2L)
+  Score %      : 60.0%
+
+  Game-by-game:
+    Game  1 (White): W  [checkmate, 42 moves]
+    Game  2 (Black): D  [50_moves, 100 moves]
+    ...
+============================================================
+```
+
+**`--elo` 기준 (Stockfish 한정):**
+
+| ELO | 대략적 수준 |
+|-----|------------|
+| 1500 | 아마추어 |
+| 2000 | 강한 아마추어 |
+| 2200 | 1990년대 강한 컴퓨터 엔진 수준 |
+| 2600 | 1997 딥블루 추정 ELO |
+| (제한 없음) | Stockfish 풀 강도 (~3600) |
 
 **키 조작:**
 
@@ -438,13 +540,13 @@ pip install -r requirements-local.txt
 | Principal Variation Search | PVS — null window after first move | `minimax.py` |
 | Iterative Deepening | + Aspiration Windows (±50cp) | `minimax.py` |
 | Check Extension | depth=0에서 체크 시 depth=1 연장 | `minimax.py` |
-| Quiescence Search | + Delta Pruning (200cp margin) | `minimax.py` |
+| Quiescence Search | + Delta Pruning + SEE < 0 Pruning | `minimax.py` |
 | Transposition Table | Zobrist Hashing (polyglot), always-replace | `minimax.py` |
-| Move Ordering | PV + MVV-LVA + Check + Killer + History | `move_ordering.py` |
+| Move Ordering | PV + **SEE** (winning/equal/losing) + Check + Killer + History | `move_ordering.py` |
 | Null Move Pruning | 적응형 R=2/3, major piece guard | `minimax.py` |
 | Late Move Reduction | log 기반: √(d-1)×√moves | `minimax.py` |
 | Futility Pruning | depth 1~2, margin 100/300 cp | `minimax.py` |
-| Evaluation Function | Material + PST + Pawn + Bishop pair + Rook + King + Mobility | `evaluation.py` |
+| Evaluation Function | Material + PST + Pawn + Bishop pair + Rook + **Outpost** + **Connected Rooks** + King + Mobility | `evaluation.py` |
 | Opening Book | 미사용 (move 15 이후만 비교) | — |
 | Endgame Tablebase | 미구현 (향후 추가 가능) | — |
 
@@ -452,6 +554,6 @@ pip install -r requirements-local.txt
 
 ## 향후 계획
 
-- [ ] SEE (Static Exchange Evaluation) 기반 캡처 필터링
-- [ ] Endgame Tablebase 연동
+- [ ] Endgame Tablebase (Syzygy) 연동
 - [ ] 웹 UI 평가 점수 바 추가
+- [ ] 통계적 유의성 검증 (t-test / p-value) — 비교 결과의 신뢰도 수치화

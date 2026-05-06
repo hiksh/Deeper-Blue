@@ -27,7 +27,7 @@ import chess
 import chess.polyglot
 
 from engine.evaluation import evaluate
-from engine.move_ordering import MoveOrderer
+from engine.move_ordering import MoveOrderer, see
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -447,6 +447,10 @@ class SearchEngine:
         capture_moves.sort(key=lambda m: self._mvv_lva_score(board, m), reverse=True)
 
         for move in capture_moves:
+            # SEE pruning: skip captures that lose material (e.g. queen takes pawn, pawn recaptures)
+            if not move.promotion and see(board, move) < 0:
+                continue
+
             # Delta pruning: skip if even capturing the best possible piece
             # won't bring the score up to alpha.
             if not move.promotion:

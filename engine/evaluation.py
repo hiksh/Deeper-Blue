@@ -42,6 +42,14 @@ ROOK_SEMI_OPEN_FILE_BONUS = 12   # only opponent pawns on the file
 # Rook on 7th rank (or 2nd for Black) — attacking pawns on their home rank
 ROOK_ON_7TH_BONUS = 25
 
+# Outpost bonuses — piece on a square not attackable by opponent pawns
+OUTPOST_KNIGHT_BONUS = 25   # knights benefit more from outposts than bishops
+OUTPOST_BISHOP_BONUS = 15
+OUTPOST_PAWN_SUPPORT_BONUS = 15  # extra if own pawn guards the outpost square
+
+# Connected rooks — two rooks with a clear path between them
+CONNECTED_ROOKS_BONUS = 20
+
 # ---------------------------------------------------------------------------
 # Piece-Square Tables (PST)
 # White's perspective; index 0 = a1, index 63 = h8.
@@ -375,6 +383,76 @@ def _king_safety_score(board: chess.Board, color: chess.Color, phase: float) -> 
 
 
 # ---------------------------------------------------------------------------
+# Outpost squares
+# ---------------------------------------------------------------------------
+
+def _outpost_score(board: chess.Board, color: chess.Color) -> int:
+    """
+    Bonus for knights and bishops on outpost squares:
+      - Advanced (rank >= 5th for White, rank <= 4th for Black)
+      - Not attackable by any opponent pawn
+      - Extra bonus if guarded by an own pawn
+    """
+    score = 0
+    opp = not color
+
+    for piece_type in [chess.KNIGHT, chess.BISHOP]:
+        for sq in board.pieces(piece_type, color):
+            rank = chess.square_rank(sq)
+            if color == chess.WHITE and rank < 4:   # must be 5th rank or higher
+                continue
+            if color == chess.BLACK and rank > 3:   # must be 4th rank or lower
+                continue
+
+            # Skip if any opponent pawn attacks this square
+            pawn_attack = any(
+                board.piece_at(atk_sq) is not None
+                and board.piece_at(atk_sq).piece_type == chess.PAWN
+                for atk_sq in board.attackers(opp, sq)
+            )
+            if pawn_attack:
+                continue
+
+            bonus = OUTPOST_KNIGHT_BONUS if piece_type == chess.KNIGHT else OUTPOST_BISHOP_BONUS
+
+            # Extra bonus if an own pawn guards the outpost square
+            pawn_support = any(
+                board.piece_at(support_sq) is not None
+                and board.piece_at(support_sq).piece_type == chess.PAWN
+                for support_sq in board.attackers(color, sq)
+            )
+            if pawn_support:
+                bonus += OUTPOST_PAWN_SUPPORT_BONUS
+
+            score += bonus
+
+    return score
+
+
+# ---------------------------------------------------------------------------
+# Connected rooks
+# ---------------------------------------------------------------------------
+
+def _connected_rooks_score(board: chess.Board, color: chess.Color) -> int:
+    """
+    Bonus when two rooks share a rank or file with nothing between them.
+    Uses board.attacks() which correctly accounts for blocking pieces.
+    """
+    rooks = list(board.pieces(chess.ROOK, color))
+    if len(rooks) < 2:
+        return 0
+
+    for i in range(len(rooks)):
+        for j in range(i + 1, len(rooks)):
+            r1, r2 = rooks[i], rooks[j]
+            # r2 is in r1's attack set iff they share rank/file with no piece between
+            if r2 in board.attacks(r1):
+                return CONNECTED_ROOKS_BONUS
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Mobility
 # ---------------------------------------------------------------------------
 
@@ -441,6 +519,8 @@ def evaluate(board: chess.Board) -> int:
         side_score += _pawn_structure_score(board, color)
         side_score += _bishop_pair_score(board, color)
         side_score += _rook_bonus_score(board, color)
+        side_score += _connected_rooks_score(board, color)
+        side_score += _outpost_score(board, color)
         side_score += _king_safety_score(board, color, phase)
         side_score += _mobility_score(board, color)
 

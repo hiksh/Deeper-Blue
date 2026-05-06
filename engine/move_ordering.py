@@ -8,15 +8,83 @@ algorithm can prune more branches early.
 
 Ordering priority (highest → lowest):
   1. PV move (from previous iteration's transposition table)
-  2. Winning / equal captures  — MVV-LVA (Most Valuable Victim, Least Valuable Attacker)
-  3. Killer moves              — quiet moves that caused a beta-cutoff at same depth
-  4. History heuristic         — quiet moves ordered by historical beta-cutoff count
-  5. Losing captures
-  6. Other quiet moves
+  2. Winning captures (SEE > 0)  — ordered by SEE value
+  3. Equal captures   (SEE == 0)
+  4. Promotions (non-capture)
+  5. Check-giving moves
+  6. Killer moves
+  7. History heuristic
+  8. Losing captures  (SEE < 0)  — tried last
 """
 
 import chess
 from engine.evaluation import PIECE_VALUES
+
+# ---------------------------------------------------------------------------
+# Static Exchange Evaluation (SEE)
+# ---------------------------------------------------------------------------
+
+def _find_lva_move(board: chess.Board, to_sq: int) -> chess.Move | None:
+    """Return the legal capture move to to_sq by the least valuable piece."""
+    min_val = float("inf")
+    best: chess.Move | None = None
+    for move in board.legal_moves:
+        if move.to_square != to_sq:
+            continue
+        piece = board.piece_at(move.from_square)
+        if piece is None:
+            continue
+        val = PIECE_VALUES.get(piece.piece_type, float("inf"))
+        if val < min_val:
+            min_val = val
+            best = move
+    return best
+
+
+def see(board: chess.Board, move: chess.Move) -> int:
+    """
+    Static Exchange Evaluation.
+
+    Returns the expected centipawn gain/loss of the capture sequence starting
+    with `move`.  Positive = good for the side making the move.
+
+    Each side can choose not to recapture (simulated by clamping gain to 0
+    at each step in the backpropagation pass).
+
+    Algorithm:
+      gain[0] = value of piece captured by the initial move
+      gain[d] = value of piece on the square after d-1 recaptures
+      Backtrack: gain[i] = max(gain[i] - gain[i+1], 0)  (right to left)
+    """
+    to_sq = move.to_square
+
+    if board.is_en_passant(move):
+        return 0   # pawn-for-pawn, treat as equal
+
+    target = board.piece_at(to_sq)
+    if target is None:
+        return 0   # not a capture
+
+    gain: list[int] = [PIECE_VALUES.get(target.piece_type, 0)]
+
+    b = board.copy()
+    b.push(move)
+
+    for _ in range(16):   # max exchange depth
+        lva = _find_lva_move(b, to_sq)
+        if lva is None:
+            break
+        on_sq = b.piece_at(to_sq)
+        if on_sq is None:
+            break
+        gain.append(PIECE_VALUES.get(on_sq.piece_type, 0))
+        b.push(lva)
+
+    # Backpropagate: each side can decline to recapture if it would be negative
+    for i in range(len(gain) - 2, -1, -1):
+        gain[i] = max(gain[i] - gain[i + 1], 0)
+
+    return gain[0]
 
 # Number of killer move slots per ply
 MAX_KILLERS = 2
@@ -90,7 +158,16 @@ class MoveOrderer:
         is_capture = board.is_capture(move)
 
         if is_capture:
-            return 1_000_000 + self._mvv_lva(board, move)
+            see_val = see(board, move)
+            if see_val > 0:
+                # Winning capture: above quiet moves, ordered by SEE value
+                return 1_100_000 + see_val
+            elif see_val == 0:
+                # Equal capture: just below winning captures
+                return 1_000_000
+            else:
+                # Losing capture: searched last, still ordered by SEE
+                return 200_000 + see_val  # can be negative, that's fine
 
         # 2. Promotions (non-capture)
         if move.promotion is not None:
