@@ -299,26 +299,42 @@ def cmd_play(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_download_positions(args: argparse.Namespace) -> None:
-    """Download Lichess Elite PGN and extract quiet positions for Texel tuning."""
-    from tuning.data_loader import download_lichess_elite, extract_quiet_positions, save_positions
+    """Stream Lichess Standard database and extract quiet positions for Texel tuning."""
+    from tuning.data_loader import (
+        build_url, stream_extract_positions, extract_from_pgn, save_positions,
+    )
 
     output = args.output or "data/positions.json.gz"
 
-    print(f"Downloading Lichess Elite {args.year}-{args.month:02d}...")
-    try:
-        pgn_path = download_lichess_elite(args.year, args.month, dest_dir="data/")
-    except Exception as exc:
-        print(f"[ERROR] {exc}")
-        sys.exit(1)
+    if args.pgn:
+        # Local PGN file — no download needed
+        if not os.path.isfile(args.pgn):
+            print(f"[ERROR] PGN file not found: {args.pgn}")
+            sys.exit(1)
+        print(f"Extracting from local file: {args.pgn}")
+        positions = extract_from_pgn(
+            args.pgn,
+            max_positions=args.n,
+            min_elo=args.min_elo,
+        )
+    else:
+        # Stream from Lichess (stops early — no full file download)
+        url = args.url or build_url(args.year, args.month)
+        print(f"Lichess Standard DB  {args.year}-{args.month:02d}  (ELO ≥ {args.min_elo})")
+        try:
+            positions = stream_extract_positions(
+                url,
+                max_positions=args.n,
+                min_elo=args.min_elo,
+            )
+        except Exception as exc:
+            print(f"\n[ERROR] {exc}")
+            print("\nAlternatives:")
+            print("  1. Try a different month:  --month 6")
+            print("  2. Use a local PGN file:   --pgn /path/to/games.pgn")
+            sys.exit(1)
 
-    print(f"\nExtracting up to {args.n:,} quiet positions (min ELO {args.min_elo})...")
-    positions = extract_quiet_positions(
-        pgn_path,
-        max_positions=args.n,
-        min_elo=args.min_elo,
-    )
-    print(f"\nExtracted {len(positions):,} positions.")
-
+    print(f"\nCollected {len(positions):,} positions.")
     save_positions(positions, output)
 
 
@@ -447,18 +463,22 @@ def build_parser() -> argparse.ArgumentParser:
     # --- download-positions ---
     p_dl = sub.add_parser(
         "download-positions",
-        help="Download Lichess Elite PGN and extract quiet positions for Texel tuning",
+        help="Stream Lichess Standard DB and extract quiet positions for Texel tuning",
     )
     p_dl.add_argument("--year",    type=int, default=2024, metavar="YYYY",
-                       help="Year of Lichess Elite database to download (default: 2024)")
+                       help="Year to stream from Lichess (default: 2024)")
     p_dl.add_argument("--month",   type=int, default=1,    metavar="MM",
-                       help="Month (1-12, default: 1)")
+                       help="Month 1-12 (default: 1)")
     p_dl.add_argument("--n",       type=int, default=200_000, metavar="N",
-                       help="Max positions to extract (default: 200000)")
+                       help="Max positions to collect (default: 200000)")
     p_dl.add_argument("--min-elo", type=int, default=2200, metavar="ELO",
                        help="Minimum ELO filter (default: 2200)")
     p_dl.add_argument("--output",  default=None, metavar="FILE",
                        help="Output path (default: data/positions.json.gz)")
+    p_dl.add_argument("--pgn",     default=None, metavar="FILE",
+                       help="Use a local .pgn / .pgn.gz file instead of downloading")
+    p_dl.add_argument("--url",     default=None, metavar="URL",
+                       help="Override the Lichess URL (advanced)")
 
     # --- tune ---
     p_tune = sub.add_parser(

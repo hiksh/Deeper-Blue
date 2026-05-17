@@ -1,20 +1,26 @@
 """
 tuning/data_loader.py
 
-Download Lichess Elite games and extract quiet positions for Texel tuning.
+Stream Lichess database games and extract quiet positions for Texel tuning.
 
-Quiet position definition:
+URL formats (confirmed working):
+  Standard: https://database.lichess.org/standard/lichess_db_standard_rated_{year}-{month:02d}.pgn.zst
+  (Streams directly — downloads only until max_positions reached, not the full file.)
+
+Quiet position:
   - Not in check
-  - No captures available
-  - Move >= 10 (skip opening)
+  - No captures available in the position
+  - Move >= skip_moves half-moves (skip opening)
 
 Usage:
-    from tuning.data_loader import download_lichess_elite, extract_quiet_positions, save_positions, load_positions
+    # Stream from Lichess and extract 200K positions
+    python main.py download-positions --year 2024 --month 1 --n 200000
 
-    pgn_path = download_lichess_elite(2024, 1, dest_dir="data/")
-    positions = extract_quiet_positions(pgn_path, max_positions=200_000)
-    save_positions(positions, "data/positions.json.gz")
+    # Use a local PGN file you already have
+    python main.py download-positions --pgn /path/to/games.pgn --n 200000
 
+    # Load saved positions
+    from tuning.data_loader import load_positions
     positions = load_positions("data/positions.json.gz")
 """
 
@@ -33,124 +39,82 @@ import chess
 import chess.pgn
 
 # ---------------------------------------------------------------------------
-# Lichess Elite Database URL
+# URLs
 # ---------------------------------------------------------------------------
-_ELITE_URL = "https://database.lichess.org/elite/{year}-{month:02d}.pgn.zst"
+
+_STANDARD_URL = (
+    "https://database.lichess.org/standard/"
+    "lichess_db_standard_rated_{year}-{month:02d}.pgn.zst"
+)
 
 
-def download_lichess_elite(
-    year: int,
-    month: int,
-    dest_dir: str | Path = "data/",
-) -> Path:
-    """Download Lichess Elite PGN.zst for the given month and decompress to .pgn.
-
-    Requires `zstandard` package for .zst decompression.
-    If the decompressed .pgn already exists, skip the download.
-
-    Returns path to the decompressed .pgn file.
-    """
-    dest_dir = Path(dest_dir)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    zst_name = f"lichess_elite_{year}-{month:02d}.pgn.zst"
-    pgn_name = f"lichess_elite_{year}-{month:02d}.pgn"
-    zst_path = dest_dir / zst_name
-    pgn_path = dest_dir / pgn_name
-
-    if pgn_path.exists():
-        print(f"  Already exists: {pgn_path}")
-        return pgn_path
-
-    url = _ELITE_URL.format(year=year, month=month)
-    print(f"  Downloading: {url}")
-    print(f"  Destination: {zst_path}")
-
-    try:
-        _download_with_progress(url, zst_path)
-    except Exception as exc:
-        raise RuntimeError(f"Download failed: {exc}\n"
-                           f"You can manually download from:\n  {url}") from exc
-
-    print(f"  Decompressing to: {pgn_path}")
-    _decompress_zst(zst_path, pgn_path)
-    zst_path.unlink()  # remove compressed file to save space
-    return pgn_path
-
-
-def _download_with_progress(url: str, dest: Path) -> None:
-    def reporthook(block_num, block_size, total_size):
-        downloaded = block_num * block_size
-        if total_size > 0:
-            pct = min(100, downloaded * 100 / total_size)
-            mb = downloaded / 1_048_576
-            total_mb = total_size / 1_048_576
-            print(f"\r  {pct:5.1f}%  {mb:.1f}/{total_mb:.1f} MB", end="", flush=True)
-        else:
-            print(f"\r  {downloaded / 1_048_576:.1f} MB", end="", flush=True)
-
-    urllib.request.urlretrieve(url, dest, reporthook)
-    print()  # newline
-
-
-def _decompress_zst(src: Path, dest: Path) -> None:
-    try:
-        import zstandard
-    except ImportError:
-        raise ImportError(
-            "zstandard is required to decompress .zst files.\n"
-            "Install it with: pip install zstandard"
-        )
-    dctx = zstandard.ZstdDecompressor()
-    with open(src, "rb") as ifh, open(dest, "wb") as ofh:
-        dctx.copy_stream(ifh, ofh)
+def build_url(year: int, month: int) -> str:
+    return _STANDARD_URL.format(year=year, month=month)
 
 
 # ---------------------------------------------------------------------------
-# Position extraction
+# Streaming extraction (no full-file download needed)
 # ---------------------------------------------------------------------------
 
-def extract_quiet_positions(
-    pgn_path: str | Path,
+def stream_extract_positions(
+    url: str,
     max_positions: int = 200_000,
     min_elo: int = 2200,
     max_per_game: int = 5,
     skip_moves: int = 10,
     seed: int = 42,
 ) -> list[tuple[str, float]]:
-    """Parse PGN, extract quiet positions with game results.
+    """Stream a Lichess .pgn.zst URL and extract quiet positions.
+
+    Stops streaming as soon as max_positions are collected — avoids
+    downloading the entire file (which can be 20+ GB).
 
     Args:
-        pgn_path:      Path to a .pgn file (plain text or gzip).
-        max_positions: Maximum number of positions to collect.
-        min_elo:       Minimum ELO for both players (filters out weak games).
-        max_per_game:  Max positions sampled from a single game.
-        skip_moves:    Ignore first N half-moves (skip opening).
-        seed:          Random seed for reproducible sampling.
+        url:           Full URL to a .pgn.zst file.
+        max_positions: Stop after this many positions.
+        min_elo:       Skip games where either player is below this ELO.
+        max_per_game:  Max positions sampled from one game.
+        skip_moves:    Skip the first N half-moves (opening).
+        seed:          RNG seed for reproducibility.
 
     Returns:
         List of (fen, result) where result ∈ {0.0, 0.5, 1.0} (White's perspective).
     """
+    try:
+        import zstandard
+    except ImportError:
+        raise ImportError(
+            "zstandard is required.  Install with: pip install zstandard"
+        )
+
     random.seed(seed)
     positions: list[tuple[str, float]] = []
-    pgn_path = Path(pgn_path)
-
-    opener = gzip.open if pgn_path.suffix == ".gz" else open
-    open_kwargs = {"mode": "rt", "encoding": "utf-8", "errors": "ignore"}
-
     games_read = 0
-    with opener(pgn_path, **open_kwargs) as f:
+
+    print(f"  Streaming: {url}")
+    print(f"  Will stop after {max_positions:,} positions (no full download needed)\n")
+
+    with urllib.request.urlopen(url, timeout=30) as response:
+        dctx  = zstandard.ZstdDecompressor()
+        reader = dctx.stream_reader(response)
+        text  = io.TextIOWrapper(reader, encoding="utf-8", errors="ignore")
+
         while len(positions) < max_positions:
-            game = chess.pgn.read_game(f)
+            try:
+                game = chess.pgn.read_game(text)
+            except Exception:
+                continue
             if game is None:
                 break
 
             games_read += 1
-            if games_read % 5000 == 0:
-                print(f"\r  {games_read:,} games scanned, {len(positions):,} positions collected",
-                      end="", flush=True)
+            if games_read % 2000 == 0:
+                print(
+                    f"\r  {games_read:,} games | {len(positions):,} / {max_positions:,} positions",
+                    end="", flush=True,
+                )
 
-            # Filter by ELO
+            # ELO filter
             try:
                 w_elo = int(game.headers.get("WhiteElo", "0") or "0")
                 b_elo = int(game.headers.get("BlackElo", "0") or "0")
@@ -159,7 +123,7 @@ def extract_quiet_positions(
             except ValueError:
                 continue
 
-            # Parse result
+            # Result
             result_str = game.headers.get("Result", "*")
             if result_str == "1-0":
                 result = 1.0
@@ -170,10 +134,10 @@ def extract_quiet_positions(
             else:
                 continue
 
-            # Walk through the game and collect candidate positions
-            board = game.board()
+            # Walk the game
+            board      = game.board()
             candidates: list[str] = []
-            half_move = 0
+            half_move  = 0
 
             for move in game.mainline_moves():
                 board.push(move)
@@ -188,15 +152,96 @@ def extract_quiet_positions(
 
                 candidates.append(board.fen())
 
-            if not candidates:
+            if candidates:
+                n       = min(max_per_game, len(candidates))
+                sampled = random.sample(candidates, n)
+                positions.extend((fen, result) for fen in sampled)
+
+    print(
+        f"\r  {games_read:,} games scanned | {len(positions):,} positions collected"
+    )
+    random.shuffle(positions)
+    return positions[:max_positions]
+
+
+# ---------------------------------------------------------------------------
+# Local PGN file extraction (plain text or gzip)
+# ---------------------------------------------------------------------------
+
+def extract_from_pgn(
+    pgn_path: str | Path,
+    max_positions: int = 200_000,
+    min_elo: int = 2200,
+    max_per_game: int = 5,
+    skip_moves: int = 10,
+    seed: int = 42,
+) -> list[tuple[str, float]]:
+    """Extract quiet positions from a local .pgn or .pgn.gz file."""
+    random.seed(seed)
+    positions: list[tuple[str, float]] = []
+    pgn_path = Path(pgn_path)
+    games_read = 0
+
+    opener    = gzip.open if pgn_path.suffix == ".gz" else open
+    open_kw   = {"mode": "rt", "encoding": "utf-8", "errors": "ignore"}
+
+    with opener(pgn_path, **open_kw) as f:
+        while len(positions) < max_positions:
+            try:
+                game = chess.pgn.read_game(f)
+            except Exception:
+                continue
+            if game is None:
+                break
+
+            games_read += 1
+            if games_read % 2000 == 0:
+                print(
+                    f"\r  {games_read:,} games | {len(positions):,} / {max_positions:,} positions",
+                    end="", flush=True,
+                )
+
+            try:
+                w_elo = int(game.headers.get("WhiteElo", "0") or "0")
+                b_elo = int(game.headers.get("BlackElo", "0") or "0")
+                if w_elo < min_elo or b_elo < min_elo:
+                    continue
+            except ValueError:
                 continue
 
-            n = min(max_per_game, len(candidates))
-            sampled = random.sample(candidates, n)
-            positions.extend((fen, result) for fen in sampled)
+            result_str = game.headers.get("Result", "*")
+            if result_str == "1-0":
+                result = 1.0
+            elif result_str == "0-1":
+                result = 0.0
+            elif result_str == "1/2-1/2":
+                result = 0.5
+            else:
+                continue
 
-    print(f"\r  {games_read:,} games scanned, {len(positions):,} positions collected")
+            board      = game.board()
+            candidates: list[str] = []
+            half_move  = 0
 
+            for move in game.mainline_moves():
+                board.push(move)
+                half_move += 1
+
+                if half_move < skip_moves:
+                    continue
+                if board.is_check():
+                    continue
+                if any(board.is_capture(m) for m in board.legal_moves):
+                    continue
+
+                candidates.append(board.fen())
+
+            if candidates:
+                n       = min(max_per_game, len(candidates))
+                sampled = random.sample(candidates, n)
+                positions.extend((fen, result) for fen in sampled)
+
+    print(f"\r  {games_read:,} games | {len(positions):,} positions collected")
     random.shuffle(positions)
     return positions[:max_positions]
 
@@ -206,18 +251,17 @@ def extract_quiet_positions(
 # ---------------------------------------------------------------------------
 
 def save_positions(positions: list[tuple[str, float]], path: str | Path) -> None:
-    """Save positions as gzip-compressed JSON (list of [fen, result] pairs)."""
+    """Save as gzip-compressed JSON."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = [[fen, result] for fen, result in positions]
     with gzip.open(path, "wt", encoding="utf-8") as f:
-        json.dump(data, f)
+        json.dump([[fen, result] for fen, result in positions], f)
     size_mb = path.stat().st_size / 1_048_576
-    print(f"  Saved {len(positions):,} positions to {path} ({size_mb:.1f} MB)")
+    print(f"  Saved {len(positions):,} positions → {path}  ({size_mb:.1f} MB)")
 
 
 def load_positions(path: str | Path) -> list[tuple[str, float]]:
-    """Load positions from gzip-compressed JSON."""
+    """Load from gzip-compressed JSON."""
     path = Path(path)
     opener = gzip.open if path.suffix == ".gz" else open
     with opener(path, "rt", encoding="utf-8") as f:
