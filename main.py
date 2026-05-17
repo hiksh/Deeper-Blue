@@ -32,6 +32,7 @@ from analysis.comparator import Comparator, ComparisonReport, MoveComparison, fi
 from analysis.visualizer import plot_all
 from analysis.engine_match import EngineMatch
 from engine.minimax import SearchEngine
+from engine.evaluation import EvalParams
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +294,79 @@ def cmd_play(args: argparse.Namespace) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Sub-command: download-positions
+# ---------------------------------------------------------------------------
+
+def cmd_download_positions(args: argparse.Namespace) -> None:
+    """Download Lichess Elite PGN and extract quiet positions for Texel tuning."""
+    from tuning.data_loader import download_lichess_elite, extract_quiet_positions, save_positions
+
+    output = args.output or "data/positions.json.gz"
+
+    print(f"Downloading Lichess Elite {args.year}-{args.month:02d}...")
+    try:
+        pgn_path = download_lichess_elite(args.year, args.month, dest_dir="data/")
+    except Exception as exc:
+        print(f"[ERROR] {exc}")
+        sys.exit(1)
+
+    print(f"\nExtracting up to {args.n:,} quiet positions (min ELO {args.min_elo})...")
+    positions = extract_quiet_positions(
+        pgn_path,
+        max_positions=args.n,
+        min_elo=args.min_elo,
+    )
+    print(f"\nExtracted {len(positions):,} positions.")
+
+    save_positions(positions, output)
+
+
+# ---------------------------------------------------------------------------
+# Sub-command: tune
+# ---------------------------------------------------------------------------
+
+def cmd_tune(args: argparse.Namespace) -> None:
+    """Run Texel tuning on evaluation parameters."""
+    from tuning.texel_tuner import tune, save_params, load_params, print_diff
+
+    if not os.path.isfile(args.positions):
+        print(f"[ERROR] Positions file not found: {args.positions}")
+        print("  Run first:  python main.py download-positions")
+        sys.exit(1)
+
+    from tuning.data_loader import load_positions
+    print(f"Loading positions from {args.positions}...")
+    positions = load_positions(args.positions)
+    print(f"  {len(positions):,} positions loaded.\n")
+
+    initial_params = None
+    if args.params and os.path.isfile(args.params):
+        initial_params = load_params(args.params)
+        print(f"Starting from existing params: {args.params}\n")
+
+    n_workers = args.workers or os.cpu_count() or 4
+
+    print("=== Texel Tuning ===")
+    best_params = tune(
+        positions=positions,
+        initial_params=initial_params,
+        include_pst=args.pst,
+        n_workers=n_workers,
+        max_iter=args.iter,
+    )
+
+    output = args.output or "data/tuned_params.json"
+    save_params(best_params, output)
+
+    print_diff(best_params)
+    print(f"\nTo use tuned params, load them in your code:")
+    print(f"  from tuning.texel_tuner import load_params")
+    print(f"  from engine.evaluation import evaluate_with_params")
+    print(f"  params = load_params('{output}')")
+    print(f"  score  = evaluate_with_params(board, params)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="deeper-blue",
@@ -370,6 +444,40 @@ def build_parser() -> argparse.ArgumentParser:
     p_match.add_argument("--output", default=None, metavar="FILE",
                           help="Save game-by-game results to CSV")
 
+    # --- download-positions ---
+    p_dl = sub.add_parser(
+        "download-positions",
+        help="Download Lichess Elite PGN and extract quiet positions for Texel tuning",
+    )
+    p_dl.add_argument("--year",    type=int, default=2024, metavar="YYYY",
+                       help="Year of Lichess Elite database to download (default: 2024)")
+    p_dl.add_argument("--month",   type=int, default=1,    metavar="MM",
+                       help="Month (1-12, default: 1)")
+    p_dl.add_argument("--n",       type=int, default=200_000, metavar="N",
+                       help="Max positions to extract (default: 200000)")
+    p_dl.add_argument("--min-elo", type=int, default=2200, metavar="ELO",
+                       help="Minimum ELO filter (default: 2200)")
+    p_dl.add_argument("--output",  default=None, metavar="FILE",
+                       help="Output path (default: data/positions.json.gz)")
+
+    # --- tune ---
+    p_tune = sub.add_parser(
+        "tune",
+        help="Run Texel tuning to optimize evaluation weights (run on GPU server)",
+    )
+    p_tune.add_argument("--positions", default="data/positions.json.gz", metavar="FILE",
+                         help="Positions file from download-positions (default: data/positions.json.gz)")
+    p_tune.add_argument("--params",  default=None, metavar="FILE",
+                         help="JSON file with starting EvalParams (default: hand-tuned values)")
+    p_tune.add_argument("--output",  default=None, metavar="FILE",
+                         help="Where to save tuned params (default: data/tuned_params.json)")
+    p_tune.add_argument("--pst",     action="store_true",
+                         help="Also tune all 8 PST tables (538 params total, slower)")
+    p_tune.add_argument("--iter",    type=int, default=300, metavar="N",
+                         help="Max L-BFGS-B iterations (default: 300)")
+    p_tune.add_argument("--workers", type=int, default=None, metavar="N",
+                         help="CPU workers (default: all available cores)")
+
     return parser
 
 
@@ -378,12 +486,14 @@ def main() -> None:
     args = parser.parse_args()
 
     dispatch = {
-        "compare":    cmd_compare,
-        "visualize":  cmd_visualize,
-        "analyze":    cmd_analyze,
-        "play":       cmd_play,
-        "play-human": cmd_play_human,
-        "match":      cmd_match,
+        "compare":             cmd_compare,
+        "visualize":           cmd_visualize,
+        "analyze":             cmd_analyze,
+        "play":                cmd_play,
+        "play-human":          cmd_play_human,
+        "match":               cmd_match,
+        "download-positions":  cmd_download_positions,
+        "tune":                cmd_tune,
     }
     dispatch[args.command](args)
 

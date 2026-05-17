@@ -134,6 +134,29 @@ class ComparisonReport:
         sub.comparisons = [c for c in self.comparisons if c.phase == phase]
         return sub
 
+    def ttest(self) -> dict | None:
+        """One-sample t-test: H₀ = mean delta == 0 (our moves no better than Deep Blue's).
+
+        Returns dict with keys: n, mean_delta, t_stat, p_value, ci_95, significant.
+        Returns None if fewer than 2 comparisons.
+        """
+        if self.total < 2:
+            return None
+        from scipy import stats
+        import numpy as np
+        deltas = np.array([c.delta for c in self.comparisons], dtype=float)
+        t_stat, p_value = stats.ttest_1samp(deltas, popmean=0)
+        ci = stats.t.interval(0.95, len(deltas) - 1,
+                              loc=deltas.mean(), scale=stats.sem(deltas))
+        return {
+            "n":          int(len(deltas)),
+            "mean_delta": float(deltas.mean()),
+            "t_stat":     float(t_stat),
+            "p_value":    float(p_value),
+            "ci_95":      (float(ci[0]), float(ci[1])),
+            "significant": bool(p_value < 0.05),
+        }
+
     def summary(self) -> str:
         lines = [
             "=" * 60,
@@ -155,6 +178,17 @@ class ComparisonReport:
                     f"({sub.win_rate:.1%}), "
                     f"avg delta {sub.avg_delta:+.1f} cp"
                 )
+        tt = self.ttest()
+        if tt:
+            lines.append("")
+            lines.append(f"  Statistical test   : one-sample t-test  (H₀: mean delta = 0)")
+            lines.append(f"  t-statistic        : {tt['t_stat']:+.3f}")
+            lines.append(f"  p-value            : {tt['p_value']:.4f}")
+            lines.append(f"  95% CI             : [{tt['ci_95'][0]:+.1f}, {tt['ci_95'][1]:+.1f}] cp")
+            if tt["significant"]:
+                lines.append("  → SIGNIFICANT (p < 0.05): our engine is statistically better")
+            else:
+                lines.append("  → NOT significant (p ≥ 0.05) — need more positions or bigger engine")
         lines.append("=" * 60)
         return "\n".join(lines)
 

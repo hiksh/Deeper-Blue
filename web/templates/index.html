@@ -207,6 +207,37 @@
     }
     .promo-btn:hover { border-color: #e94560; }
 
+    /* Eval bar */
+    #eval-bar-wrap {
+      width: 480px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    #eval-bar {
+      flex: 1;
+      height: 20px;
+      background: #222;
+      border-radius: 4px;
+      overflow: hidden;
+      display: flex;
+    }
+    #eval-bar-white {
+      background: #f0f0f0;
+      width: 50%;
+      transition: width 0.4s ease;
+      min-width: 4px;
+    }
+    #eval-bar-black { background: #333; flex: 1; }
+    #eval-label {
+      font-size: 0.82rem;
+      font-weight: bold;
+      color: #e0e0e0;
+      min-width: 52px;
+      text-align: right;
+      font-family: 'Consolas', monospace;
+    }
+
     /* Scrollbar */
     ::-webkit-scrollbar { width: 5px; }
     ::-webkit-scrollbar-track { background: #0f3460; }
@@ -228,6 +259,14 @@
       <span id="label-top-text">Deep Blue (Black)</span>
     </div>
     <div id="board"></div>
+    <!-- Eval bar -->
+    <div id="eval-bar-wrap">
+      <div id="eval-bar">
+        <div id="eval-bar-white"></div>
+        <div id="eval-bar-black"></div>
+      </div>
+      <span id="eval-label">0.00</span>
+    </div>
     <div class="player-label" id="label-bottom">
       <span class="dot dot-white"></span>
       <span id="label-bottom-text">You (White)</span>
@@ -342,11 +381,22 @@ function renderHistory(moveHistory) {
   el.scrollTop = el.scrollHeight;
 }
 
+function updateEvalBar(evalCp, evalStr) {
+  // Map eval to white-bar percentage: 0cp → 50%, ±800cp → near 0%/100%
+  const clamped = Math.max(-800, Math.min(800, evalCp));
+  const whitePct = 50 + (clamped / 800) * 50;
+  document.getElementById('eval-bar-white').style.width = whitePct.toFixed(1) + '%';
+  document.getElementById('eval-label').textContent = evalStr || '0.00';
+}
+
 function applyServerState(state) {
   game.load(state.fen);
   board.position(state.fen, false);
   renderHistory(state.move_history);
   updateLabels();
+  if (state.eval_cp !== undefined) {
+    updateEvalBar(state.eval_cp, state.eval_str);
+  }
 
   const s = state.status;
   if (s === 'playing') {

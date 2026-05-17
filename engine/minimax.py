@@ -119,11 +119,18 @@ class SearchEngine:
     search(board, max_depth, time_limit) -> (best_move, score)
     """
 
-    def __init__(self) -> None:
+    def __init__(self, tablebase_path: str | None = None) -> None:
         self.tt = TranspositionTable()
         self.nodes_searched = 0
         self._start_time: float = 0.0
         self._time_limit: float = float("inf")
+        self._tablebase = None
+        if tablebase_path:
+            try:
+                import chess.syzygy
+                self._tablebase = chess.syzygy.open_tablebase(tablebase_path)
+            except Exception as exc:
+                print(f"[WARN] Syzygy tablebase could not be loaded: {exc}")
 
     # ------------------------------------------------------------------
     # Public interface
@@ -276,6 +283,24 @@ class SearchEngine:
         # --- Terminal check ---
         if board.is_game_over():
             return self._terminal_score(board, ply)
+
+        # --- Syzygy tablebase probe ---
+        # Only probe when few pieces remain and tablebase is available.
+        if self._tablebase is not None:
+            n_pieces = chess.popcount(board.occupied)
+            if n_pieces <= 5:
+                try:
+                    import chess.syzygy
+                    wdl = self._tablebase.probe_wdl(board)
+                    # wdl: 2=win, 1=cursed win (draw), 0=draw, -1=blessed loss (draw), -2=loss
+                    if wdl == 2:
+                        return MATE_SCORE - ply
+                    elif wdl == -2:
+                        return -(MATE_SCORE - ply)
+                    elif wdl in (0, 1, -1):
+                        return 0
+                except Exception:
+                    pass  # table not available for this position — continue search
 
         # --- Check Extension ---
         # When in check, extend by 1 ply to avoid missing forced sequences.

@@ -554,6 +554,8 @@ pip install -r requirements-local.txt
 
 ## 향후 계획
 
-- [ ] Endgame Tablebase (Syzygy) 연동
-- [ ] 웹 UI 평가 점수 바 추가
-- [ ] 통계적 유의성 검증 (t-test / p-value) — 비교 결과의 신뢰도 수치화
+- [x] Endgame Tablebase (Syzygy) 연동 — `engine/minimax.py` (`SearchEngine(tablebase_path=...)`)
+- [x] 웹 UI 평가 점수 바 추가 — `web/app.py` + `web/templates/index.html`
+- [x] 통계적 유의성 검증 (t-test / p-value) — `analysis/comparator.py` (`ComparisonReport.ttest()`)
+- [x] **Texel Tuning (ML 평가함수 튜닝)** — `tuning/` 모듈 전체
+- [x] 착수 히트맵 시각화 — `analysis/visualizer.py` (`plot_move_heatmap`)

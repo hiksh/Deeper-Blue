@@ -16,6 +16,7 @@ Local:  python web/app.py
 Render: set start command to  gunicorn web.app:app
 """
 
+import math
 import os
 import sys
 
@@ -26,6 +27,7 @@ from flask import Flask, jsonify, render_template, request, session
 import chess
 
 from engine.minimax import SearchEngine
+from engine.evaluation import evaluate as _evaluate
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = os.environ.get("SECRET_KEY", "deeper-blue-secret-2024")
@@ -58,6 +60,7 @@ def _new_game(session_id: str, player_color: str = "white") -> dict:
 
 def _board_state(game: dict) -> dict:
     board: chess.Board = game["board"]
+    eval_cp, eval_str = _compute_eval(board)
     return {
         "fen":          board.fen(),
         "turn":         "white" if board.turn == chess.WHITE else "black",
@@ -67,7 +70,22 @@ def _board_state(game: dict) -> dict:
         "in_check":     board.is_check(),
         "legal_moves":  [m.uci() for m in board.legal_moves],
         "last_move":    game["move_history"][-1] if game["move_history"] else None,
+        "eval_cp":      eval_cp,
+        "eval_str":     eval_str,
     }
+
+
+def _compute_eval(board: chess.Board) -> tuple[int, str]:
+    """Return (centipawns_white_perspective, display_string)."""
+    if board.is_game_over():
+        return 0, "0.00"
+    cp = _evaluate(board)
+    if abs(cp) >= 29_000:
+        ply_to_mate = 30_000 - abs(cp)
+        moves_to_mate = math.ceil(ply_to_mate / 2)
+        sign = "+" if cp > 0 else "-"
+        return cp, f"{sign}M{moves_to_mate}"
+    return cp, f"{cp / 100:+.2f}"
 
 
 def _apply_move(game: dict, move: chess.Move) -> None:

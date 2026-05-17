@@ -237,6 +237,63 @@ def plot_phase_breakdown(report: ComparisonReport, save_path: str | None = None)
 
 
 # ---------------------------------------------------------------------------
+# 5. Move destination heatmap
+# ---------------------------------------------------------------------------
+
+def plot_move_heatmap(report: ComparisonReport, save_path: str | None = None) -> None:
+    """
+    8×8 히트맵: 우리 엔진과 딥블루가 착수한 목적지 칸의 빈도 비교.
+    색이 진할수록 해당 칸에 더 자주 착수.
+    """
+    import chess as _chess
+
+    our_count = np.zeros((8, 8), dtype=float)
+    db_count  = np.zeros((8, 8), dtype=float)
+
+    for c in report.comparisons:
+        try:
+            our_sq = _chess.Move.from_uci(c.our_move).to_square
+            db_sq  = _chess.Move.from_uci(c.deep_blue_move).to_square
+        except ValueError:
+            continue
+        our_count[7 - _chess.square_rank(our_sq)][_chess.square_file(our_sq)] += 1
+        db_count [7 - _chess.square_rank(db_sq)] [_chess.square_file(db_sq)]  += 1
+
+    files = list("abcdefgh")
+    ranks = [str(r) for r in range(8, 0, -1)]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+    for ax, heat, title in [
+        (ax1, our_count, "Deeper-Blue"),
+        (ax2, db_count,  "Deep Blue 1997"),
+    ]:
+        vmax = max(heat.max(), 1)
+        im = ax.imshow(heat, cmap="Blues", aspect="equal", vmin=0, vmax=vmax)
+        ax.set_title(f"{title}\nMove Destination Frequency")
+        ax.set_xticks(range(8))
+        ax.set_yticks(range(8))
+        ax.set_xticklabels(files)
+        ax.set_yticklabels(ranks)
+        for r in range(8):
+            for f in range(8):
+                v = int(heat[r][f])
+                if v > 0:
+                    txt_color = "white" if heat[r][f] > vmax * 0.55 else "black"
+                    ax.text(f, r, str(v), ha="center", va="center",
+                            fontsize=7, color=txt_color)
+        plt.colorbar(im, ax=ax, label="Move count")
+
+    fig.suptitle(
+        "Move Destination Frequency: Deeper-Blue vs Deep Blue 1997\n"
+        f"(total positions: {report.total})",
+        fontsize=13,
+    )
+    plt.tight_layout()
+    _save_or_show(fig, save_path)
+
+
+# ---------------------------------------------------------------------------
 # Convenience: plot all charts at once
 # ---------------------------------------------------------------------------
 
@@ -254,6 +311,7 @@ def plot_all(report: ComparisonReport, output_dir: str | None = None) -> None:
     plot_delta_distribution(report,  save_path=path("delta_distribution.png"))
     plot_score_timeline(report,      save_path=path("score_timeline.png"))
     plot_phase_breakdown(report,     save_path=path("phase_breakdown.png"))
+    plot_move_heatmap(report,        save_path=path("move_heatmap.png"))
 
     if not output_dir:
         plt.show()
