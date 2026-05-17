@@ -354,7 +354,12 @@ def cmd_tune(args: argparse.Namespace) -> None:
     from tuning.data_loader import load_positions
     print(f"Loading positions from {args.positions}...")
     positions = load_positions(args.positions)
-    print(f"  {len(positions):,} positions loaded.\n")
+    if args.max_positions and len(positions) > args.max_positions:
+        positions = positions[: args.max_positions]
+        print(f"  Truncated to {len(positions):,} positions (--max-positions).")
+    else:
+        print(f"  {len(positions):,} positions loaded.")
+    print()
 
     initial_params = None
     if args.params and os.path.isfile(args.params):
@@ -497,6 +502,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Max L-BFGS-B iterations (default: 300)")
     p_tune.add_argument("--workers", type=int, default=None, metavar="N",
                          help="CPU workers (default: all available cores)")
+    p_tune.add_argument("--max-positions", type=int, default=None, metavar="N",
+                         help="Use only first N positions from the file (useful for PST tuning)")
 
     return parser
 
