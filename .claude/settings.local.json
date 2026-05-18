@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Hiksh\\\\Desktop\\\\College\\\\3rd\\\\Alogrithm\\\\pj\\\\Deeper-Blue\" -Recurse -File)",
+      "Bash(Select-Object FullName)"
+    ]
+  }
+}

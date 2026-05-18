@@ -80,9 +80,12 @@ def see(board: chess.Board, move: chess.Move) -> int:
         gain.append(PIECE_VALUES.get(on_sq.piece_type, 0))
         b.push(lva)
 
-    # Backpropagate: each side can decline to recapture if it would be negative
+    # Backpropagate: each side can decline to recapture if it would be negative,
+    # except at i=0 (the initial capture is already committed — no clamping there).
     for i in range(len(gain) - 2, -1, -1):
-        gain[i] = max(gain[i] - gain[i + 1], 0)
+        gain[i] -= gain[i + 1]
+        if i > 0:
+            gain[i] = max(gain[i], 0)
 
     return gain[0]
 

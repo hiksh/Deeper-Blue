@@ -66,7 +66,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ---
 
-## 프로젝트 현황 (2025-05-17 기준)
+## 프로젝트 현황 (2026-05-18 기준)
 
 ### 벤치마크 결과
 
@@ -92,6 +92,8 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 | 웹 UI 평가 점수 바 | `web/app.py`, `web/templates/index.html` | ✅ |
 | 착수 히트맵 시각화 | `analysis/visualizer.py` | ✅ |
 | CLI: `download-positions`, `tune` | `main.py` | ✅ |
+| **[버그수정]** `from_vector` int(round) 제거 → 튜닝 기울기 정상화 | `engine/evaluation.py` | ✅ |
+| **[버그수정]** SEE 역전파 i=0 클램프 제거 → 손해 교환 프루닝 정상화 | `engine/move_ordering.py` | ✅ |
 
 ---
 
@@ -110,6 +112,10 @@ SKIP_PST=1 nohup ./run_tuning.sh > logs/tune_scalar.log 2>&1 &
 - `data/positions_1M.json.gz` — 학습 포지션 (1M개)
 - `data/tuned_scalars.json` — 스칼라 튜닝 결과 (26 params)
 - `data/tuned_full.json` — PST 포함 튜닝 결과 (538 params)
+
+> ⚠️ **주의:** 2026-05-18 이전에 생성된 `tuned_scalars.json` / `tuned_full.json` 파일은
+> `from_vector`의 `int(round())` 버그로 인해 최적화가 전혀 이루어지지 않았으며
+> 기본값만 담고 있음. 버그 수정 후 반드시 튜닝을 **재실행**해야 한다.
 
 ---
 
@@ -187,14 +193,14 @@ python main.py visualize --csv data/results_v3.csv --charts output/v3/
 ```python
 # 빠른 검증 (단일 FEN)
 from tuning.texel_tuner import load_params
-from engine.evaluation import evaluate_with_params
+from engine.evaluation import evaluate, evaluate_with_params
 import chess
 
 params = load_params("data/tuned_full.json")
 board  = chess.Board("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
 
-default_score = evaluate_with_params(board, None)   # 기본값 (None이면 기본 eval 사용)
-tuned_score   = evaluate_with_params(board, params)
+default_score = evaluate(board)                     # 기본 eval (모듈 상수 사용)
+tuned_score   = evaluate_with_params(board, params) # 튜닝된 파라미터 사용
 print(f"기본: {default_score:+d} cp  →  튜닝 후: {tuned_score:+d} cp")
 ```
 

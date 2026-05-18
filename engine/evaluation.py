@@ -651,13 +651,13 @@ class EvalParams:
         v = np.asarray(v, dtype=float)
         idx = [0]
 
-        def s() -> int:
-            val = int(round(v[idx[0]]))
+        def s():
+            val = v[idx[0]]
             idx[0] += 1
             return val
 
         def t() -> tuple:
-            vals = tuple(int(round(x)) for x in v[idx[0]: idx[0] + 64])
+            vals = tuple(v[idx[0]: idx[0] + 64])
             idx[0] += 64
             return vals
 
@@ -686,7 +686,10 @@ class EvalParams:
         d = {}
         for fname in self.__dataclass_fields__:
             val = getattr(self, fname)
-            d[fname] = list(val) if isinstance(val, tuple) else val
+            if isinstance(val, tuple):
+                d[fname] = [int(round(x)) for x in val]
+            else:
+                d[fname] = int(round(val))
         return d
 
     @classmethod
