@@ -66,7 +66,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ---
 
-## 프로젝트 현황 (2026-05-18 기준)
+## 프로젝트 현황 (2026-05-19 기준)
 
 ### 벤치마크 결과
 
@@ -94,6 +94,9 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 | CLI: `download-positions`, `tune` | `main.py` | ✅ |
 | **[버그수정]** `from_vector` int(round) 제거 → 튜닝 기울기 정상화 | `engine/evaluation.py` | ✅ |
 | **[버그수정]** SEE 역전파 i=0 클램프 제거 → 손해 교환 프루닝 정상화 | `engine/move_ordering.py` | ✅ |
+| **[버그수정]** `_SIGMOID_K` 400→200 → gradient 신호 2.7배 강화 | `tuning/texel_tuner.py` | ✅ |
+| **[버그수정]** `_pst_score_p` round() 제거 → Phase 2 PST 538 파라미터 기울기 복구 | `engine/evaluation.py` | ✅ |
+| **[버그수정]** `_king_safety_p` round() 3개 제거 → king_shield·king_open_file·king_eg_center 기울기 복구 | `engine/evaluation.py` | ✅ |
 
 ---
 
@@ -113,9 +116,12 @@ SKIP_PST=1 nohup ./run_tuning.sh > logs/tune_scalar.log 2>&1 &
 - `data/tuned_scalars.json` — 스칼라 튜닝 결과 (26 params)
 - `data/tuned_full.json` — PST 포함 튜닝 결과 (538 params)
 
-> ⚠️ **주의:** 2026-05-18 이전에 생성된 `tuned_scalars.json` / `tuned_full.json` 파일은
-> `from_vector`의 `int(round())` 버그로 인해 최적화가 전혀 이루어지지 않았으며
-> 기본값만 담고 있음. 버그 수정 후 반드시 튜닝을 **재실행**해야 한다.
+> ⚠️ **주의:** 2026-05-19 이전에 생성된 `tuned_scalars.json` / `tuned_full.json` 파일은
+> 아래 버그들로 인해 최적화가 거의 이루어지지 않았으며 기본값에 가까운 값만 담고 있음.
+> 반드시 2026-05-19 이후 코드로 튜닝을 **재실행**해야 한다.
+> - `from_vector` int(round()) 버그 (2026-05-18 수정)
+> - `_SIGMOID_K=400` → gradient 신호 미약 (2026-05-19 수정)
+> - `_pst_score_p`, `_king_safety_p` round() → 일부 파라미터 gradient 소멸 (2026-05-19 수정)
 
 ---
 

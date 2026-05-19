@@ -706,7 +706,7 @@ def _pst_score_p(piece_type: int, sq: int, color: chess.Color,
                  phase: float, p: EvalParams) -> int:
     mg_t, eg_t = p.get_pst(piece_type)
     idx = sq if color == chess.WHITE else chess.square_mirror(sq)
-    return round(mg_t[idx] * (1 - phase) + eg_t[idx] * phase)
+    return mg_t[idx] * (1 - phase) + eg_t[idx] * phase
 
 
 def _pawn_structure_p(board: chess.Board, color: chess.Color, p: EvalParams) -> int:
@@ -822,19 +822,19 @@ def _king_safety_p(board: chess.Board, color: chess.Color,
     if mg_w > 0.2:
         for sq in board.attacks(king_sq):
             if board.piece_at(sq) == chess.Piece(chess.PAWN, color):
-                score += round(p.king_shield * mg_w)
+                score += p.king_shield * mg_w
 
     kf = chess.square_file(king_sq)
     for df in (-1, 0, 1):
         f = kf + df
         if 0 <= f <= 7:
             if not any(chess.square_file(s) == f for s in board.pieces(chess.PAWN, color)):
-                score -= round(p.king_open_file * mg_w)
+                score -= p.king_open_file * mg_w
 
     if phase > 0.4:
         kr = chess.square_rank(king_sq)
         dist = abs(3.5 - kf) + abs(3.5 - kr)
-        score += round((7 - dist) * p.king_eg_center * phase)
+        score += (7 - dist) * p.king_eg_center * phase
 
     return score
 
