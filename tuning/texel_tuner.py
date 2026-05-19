@@ -36,7 +36,7 @@ from engine.evaluation import EvalParams, evaluate_with_params
 # Centipawn scale for win probability sigmoid.
 # sigmoid(score) = 1 / (1 + 10^(-score/K))
 # K=400 means a 400cp advantage gives ~91% win probability.
-_SIGMOID_K = 400.0
+_SIGMOID_K = 200.0
 
 
 # ---------------------------------------------------------------------------
