@@ -209,9 +209,25 @@ ENGINE_DEPTH = 4
 ENGINE_TIME_LIMIT = 5.0
 
 
+def find_c_engine(custom_path: str | None = None) -> str | None:
+    """Locate the compiled C engine binary. Returns None if not found."""
+    if custom_path:
+        return custom_path if os.path.isfile(custom_path) else None
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates = [
+        os.path.join(project_root, "c_engine", "deeper_blue.exe"),
+        os.path.join(project_root, "c_engine", "deeper_blue"),
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
 class Comparator:
     """
     Orchestrates the comparison between our engine and Deep Blue's moves.
+    Pass c_engine_path to use the compiled C engine instead of Python SearchEngine.
     """
 
     def __init__(
@@ -221,13 +237,29 @@ class Comparator:
         engine_time: float = ENGINE_TIME_LIMIT,
         stockfish_time: float = STOCKFISH_ANALYSIS_TIME,
         equality_threshold: int = EQUALITY_THRESHOLD_CP,
+        c_engine_path: str | None = None,
     ) -> None:
         self.sf_path = find_stockfish(stockfish_path)
         self.engine_depth = engine_depth
         self.engine_time = engine_time
         self.sf_time = stockfish_time
         self.eq_threshold = equality_threshold
-        self._our_engine = SearchEngine()
+
+        c_path = c_engine_path or find_c_engine()
+        if c_path:
+            self._c_engine = chess.engine.SimpleEngine.popen_uci(c_path)
+            self._our_engine = None
+            print(f"Using C engine: {c_path}")
+        else:
+            self._c_engine = None
+            self._our_engine = SearchEngine()
+
+    def __del__(self):
+        if self._c_engine is not None:
+            try:
+                self._c_engine.quit()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Public API
@@ -250,15 +282,15 @@ class Comparator:
                 if not verbose:
                     print(f"\r  Analysing position {i}/{total}...", end="", flush=True)
                 try:
-                    result = self._compare_one(pos, sf, verbose)
+                    cmp_result = self._compare_one(pos, sf, verbose)
                 except Exception as exc:
                     print(f"\n  [WARN] Skipped {pos.game_id} move {pos.move_number}: {exc}")
                     continue
-                if result is not None:
-                    report.comparisons.append(result)
+                if cmp_result is not None:
+                    report.comparisons.append(cmp_result)
 
         if not verbose:
-            print()  # newline after progress indicator
+            print()
         return report
 
     def compare_game_records(
@@ -283,12 +315,19 @@ class Comparator:
         board = chess.Board(pos.fen)
 
         # --- Our engine's move ---
-        self._our_engine.tt.clear()
-        our_move, _ = self._our_engine.search(
-            board, max_depth=self.engine_depth, time_limit=self.engine_time
-        )
+        if self._c_engine is not None:
+            result = self._c_engine.play(
+                board,
+                chess.engine.Limit(depth=self.engine_depth, time=self.engine_time),
+            )
+            our_move = result.move
+        else:
+            self._our_engine.tt.clear()
+            our_move, _ = self._our_engine.search(
+                board, max_depth=self.engine_depth, time_limit=self.engine_time
+            )
         if our_move is None:
-            return None  # No legal moves (shouldn't happen for non-terminal positions)
+            return None
 
         # --- Validate Deep Blue's move ---
         try:

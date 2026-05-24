@@ -80,11 +80,11 @@ def texel_loss(
 def _get_bounds(include_pst: bool) -> list[tuple[float, float]]:
     """Per-parameter lower/upper bounds (keeps tuning numerically stable)."""
     scalar_bounds = [
-        (50,  200),   # pawn
-        (200, 500),   # knight
-        (200, 500),   # bishop
-        (350, 700),   # rook
-        (700, 1200),  # queen
+        (100, 100),   # pawn — fixed as scale anchor (prevents degenerate scaling)
+        (250, 400),   # knight
+        (250, 400),   # bishop
+        (400, 600),   # rook
+        (800, 1100),  # queen
         (0,   120),   # bishop_pair
         (0,    60),   # rook_open_file
         (0,    40),   # rook_semi_open
@@ -223,4 +223,4 @@ def print_diff(tuned: EvalParams, baseline: EvalParams | None = None) -> None:
         new = getattr(tuned, name)
         diff = new - old
         marker = " *" if abs(diff) >= 5 else ""
-        print(f"  {name:22s}  {old:5d}  {new:5d}  {diff:+6d}{marker}")
+        print(f"  {name:22s}  {round(old):5d}  {round(new):5d}  {round(diff):+6d}{marker}")

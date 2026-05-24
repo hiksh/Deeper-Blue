@@ -67,6 +67,7 @@ def cmd_compare(args: argparse.Namespace) -> None:
         stockfish_path=sf_path,
         engine_depth=args.depth,
         engine_time=args.time,
+        c_engine_path=getattr(args, "c_engine", None),
     )
 
     print("Running comparison... (this may take a while)\n")
@@ -219,12 +220,18 @@ def cmd_match(args: argparse.Namespace) -> None:
     print(f"Opponent : {args.opponent}{elo_str}")
     print(f"Games    : {args.games}  |  Depth: {args.depth}  |  Time/move: {args.time}s\n")
 
+    from analysis.comparator import find_c_engine
+    c_path = find_c_engine()
+    if c_path:
+        print(f"Using C engine: {c_path}\n")
+
     match = EngineMatch(
         opponent_path=args.opponent,
         n_games=args.games,
         time_per_move=args.time,
         depth=args.depth,
         opponent_elo=args.elo,
+        c_engine_path=c_path,
     )
 
     result = match.play_match(verbose=True)
@@ -413,6 +420,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_compare.add_argument("--charts", default=None, const="", nargs="?", metavar="DIR",
                             help="Generate charts after comparison. Saves to DIR if given, else displays in window.")
     p_compare.add_argument("--stockfish", **sf_kwargs)
+    p_compare.add_argument("--c-engine", default=None, metavar="PATH",
+                            help="Path to compiled C engine binary (auto-detected if built)")
 
     # --- visualize ---
     p_vis = sub.add_parser("visualize", help="Render charts from a saved CSV result file")

@@ -9,14 +9,28 @@
 
 ## 최신 벤치마크 결과
 
+### 딥블루 기보 비교 (Stockfish 평가)
+
 > 조건: depth=4, 수당 3초, Stockfish 18 평가, 22개 포지션 (move ≥ 15, middlegame)
 
-| 버전 | 승 | 패 | 무 | 승률 | 평균 델타 |
-|------|----|----|-----|------|----------|
-| **v1** (초기) | 5/22 | 11/22 | 6/22 | 22.7% | — |
-| **v2** (개선) | **6/22** | 11/22 | 5/22 | **27.3%** | **+17.7 cp** |
+| 버전 | 승 | 패 | 무 | 승률 | 평균 델타 | 주요 변경 |
+|------|----|----|-----|------|----------|----------|
+| **v1** (초기) | 5/22 | 11/22 | 6/22 | 22.7% | — | 기본 Alpha-Beta |
+| **v2** (개선) | 6/22 | 11/22 | 5/22 | 27.3% | +17.7 cp | SEE 버그픽스 |
+| **v3** (C 엔진) | — | — | — | *측정 예정* | — | C 엔진 + 오프닝 북 |
 
 > 평균 델타(+값) = Stockfish 기준 우리 수가 딥블루 수보다 평균 얼마나 좋은지 (cp)
+
+### ELO 추정 (Stockfish 대전)
+
+> 조건: C 엔진, 수당 2초, 각 ELO 20게임 (2026-05-24 기준)
+
+| 상대 ELO | 승 | 무 | 패 | 승률 |
+|----------|----|----|-----|------|
+| 1500 | 16 | 2 | 2 | **85.0%** |
+| 2000 | 8 | 1 | 11 | **42.5%** |
+
+> ELO 추정: 85% vs 1500 → ~1800, 42.5% vs 2000 → ~1950 → 종합 약 **ELO 1850~1950**
 
 ### v1 → v2 주요 변화 포지션
 
@@ -32,6 +46,13 @@
 
 ```
 Deeper-Blue/
+├── c_engine/
+│   ├── engine.c           # C 엔진 메인 소스 (UCI 프로토콜, 비트보드, Alpha-Beta)
+│   ├── deeper_blue.exe    # 컴파일된 C 엔진 바이너리 (Windows x64)
+│   ├── poly_random.h      # Polyglot 표준 Zobrist 난수 (781개)
+│   ├── gen_poly_random.py # poly_random.h 생성 스크립트
+│   ├── gen_book.py        # Polyglot 오프닝 북 생성 (book.bin)
+│   └── book.bin           # 생성된 오프닝 북 (Polyglot 형식)
 ├── engine/
 │   ├── minimax.py         # 탐색 엔진 (Negamax, Alpha-Beta, PVS, LMR, QSearch, TT...)
 │   ├── evaluation.py      # 정적 평가 함수 (기물, PST, 폰 구조, 비숍쌍, 룩, 킹, 모빌리티)
@@ -54,6 +75,145 @@ Deeper-Blue/
 ├── requirements.txt       # 서버/배포용 의존성
 ├── requirements-local.txt # 로컬 GUI 포함 의존성
 └── render.yaml            # Render 배포 설정
+```
+
+---
+
+---
+
+## v4 업데이트 내역 (2026-05-24)
+
+### 1. Perft 테스트 추가 (`c_engine/engine.c`)
+
+이동 생성기 정확도 검증을 위한 perft 커맨드를 C 엔진에 추가했습니다.
+
+```
+position startpos
+perft 5
+→ Nodes searched: 4865609  ✓ (표준값과 일치)
+```
+
+d1=20, d2=400, d3=8902, d4=197281, d5=4865609 모두 정확히 일치 — 이동 생성기 버그 없음 확인.
+
+### 2. 버그수정: Qsearch 합법성 검사 누락
+
+**원인:** Quiescence Search에서 캡처 무브에 대한 합법성 검사가 없었습니다.  
+핀된 기물이 캡처하는 불법 수가 qsearch 내에서 평가되어 전술적 판단 오류를 유발했습니다.
+
+**수정:** 캡처 후보마다 `do_move → is_attacked → undo_move`로 합법성 검사 추가.
+
+### 3. 버그수정: Qsearch 체크 상황 처리 누락
+
+**원인:** 체크 상태에서도 `stand_pat`(정적 평가)를 하한으로 사용하고 있었습니다.  
+체크 중에는 반드시 응수해야 하므로 `stand_pat`은 유효하지 않으며, 체크메이트 탐지도 불가능했습니다.
+
+**수정:**
+- 체크 중이면 `stand_pat` 사용 안 함 (`best = -INF`로 초기화)
+- 캡처뿐 아니라 모든 합법 수 생성 (체크 회피 포함)
+- 합법 수 없으면 체크메이트로 처리
+
+### 4. 게임 히스토리 반복 감지
+
+루트 이전 포지션(게임에서 이미 나온 수)도 반복 판정에 포함합니다.  
+`g_game_keys[]`에 포지션 키를 기록해 `negamax` 내에서 2-fold 반복을 정확히 감지합니다.
+
+### 5. 평가 함수 개선
+
+- **나이트 아웃포스트 보너스**: 상대 폰이 공격할 수 없는 전진 거점 나이트에 +5~+24 cp
+- **템포 보너스**: 선수 측에 +10 cp
+
+### ELO 대전 결과 (v4 기준)
+
+| 상대 ELO | 게임 수 | 승 | 무 | 패 | 승률 |
+|----------|---------|----|----|-----|------|
+| 1500 | 20 | 16 | 2 | 2 | **85.0%** |
+| 2000 | 20 | 8 | 1 | 11 | **42.5%** |
+
+이전 v3 대비: ELO 1500 40% → 85%, ELO 2000 5% → 42.5%  
+추정 ELO: **~1900** (qsearch 치명 버그 2개 수정 효과)
+
+---
+
+## v3 업데이트 내역 (2026-05-23)
+
+### 1. C 엔진 전환 (`c_engine/engine.c`)
+
+Python 탐색 엔진을 **순수 C(C99)로 완전 재작성**했습니다.  
+동일한 알고리즘(Negamax, Alpha-Beta, PVS, LMR, NMP, Quiescence, TT)을 유지하면서  
+인터프리터 오버헤드 없이 실행됩니다.
+
+| 항목 | Python 엔진 | C 엔진 |
+|------|-------------|--------|
+| 구현 방식 | `chess` 라이브러리 사용 | 비트보드 직접 구현 |
+| 무브 생성 | 라이브러리 위임 | 비트마스크 기반 gen_pawn/piece/castling |
+| 탐색 속도 | depth=4 수준 | depth=8~12 실용적 |
+| UCI 프로토콜 | 없음 (Python 내부 호출) | 완전 구현 (arena 호환) |
+| 엔드게임 테이블베이스 | Syzygy 연동 | 미구현 (향후 추가 가능) |
+
+**C 엔진 컴파일:**
+```bash
+cd c_engine
+gcc -O3 -o deeper_blue.exe engine.c -lm
+```
+
+### 2. 버그픽스: 킹 캡처 허용 문제 (KING_GONE)
+
+**원인:** 의사합법적(pseudo-legal) 무브 생성 시 `theirs` 비트보드에 상대 킹이 포함되어,  
+킹을 직접 캡처하는 불법 무브가 생성됐습니다.  
+합법성 검사는 자기 킹만 확인하므로 상대 킹 캡처가 걸러지지 않았습니다.
+
+**수정:**
+```c
+/* 무브 생성 시 상대 킹을 캡처 대상에서 제외 */
+BB theirs = b->occ[them] & ~b->bb[them][KING];
+```
+
+**효과:** 이 버그 수정만으로 Stockfish ELO 1500 대비 승률 **35%** 달성 (depth 8 기준).
+
+### 3. Polyglot 오프닝 북 (`c_engine/book.bin`)
+
+**표준 Polyglot 형식**의 오프닝 북을 엔진에 통합했습니다.
+
+- **Zobrist 해싱**: 표준 Polyglot 781개 난수를 사용해 파이썬-체스 라이브러리와  
+  정확히 동일한 포지션 키를 생성 (`poly_random.h`)
+- **북 포맷**: 16바이트/엔트리, big-endian, 키 기준 정렬 (이진 탐색)
+- **북 생성**: Stockfish depth=14, BFS ply≤14, multipv=3으로 최상위 수 수록
+  ```bash
+  cd c_engine
+  python gen_book.py ../stockfish/stockfish-windows-x86-64-avx2.exe
+  ```
+- **UCI 옵션**: `setoption name OwnBook value true/false`,  
+  `setoption name BookFile value book.bin`
+
+### 4. 시간 관리 개선
+
+기존 고정 time_ms 대신 남은 시간과 인크리먼트를 반영한 동적 시간 배분:
+
+```c
+int moves_left = (movestogo > 0) ? movestogo : 30;
+time_ms = our_time / (moves_left + 3) + (int)(our_inc * 0.8);
+int cap = our_time * 60 / 100;  /* 남은 시간의 60% 초과 금지 */
+if (time_ms > cap) time_ms = cap;
+if (time_ms < 50)  time_ms = 50;   /* 최소 50ms */
+```
+
+- `movestogo` UCI 파라미터 파싱 추가
+- `movetime` 단독 지정 시 해당 시간 -50ms 사용
+- `infinite` 모드 지원
+
+### 5. `analysis/engine_match.py` C 엔진 연동
+
+`EngineMatch`가 C 엔진 바이너리를 UCI 엔진으로 직접 호출합니다:
+
+```python
+match = EngineMatch(
+    opponent_path="stockfish/stockfish.exe",
+    n_games=10,
+    time_per_move=2.0,
+    depth=8,
+    opponent_elo=1500,
+    c_engine_path="c_engine/deeper_blue.exe",  # 추가됨
+)
 ```
 
 ---
@@ -536,18 +696,18 @@ pip install -r requirements-local.txt
 
 | 딥블루 | Deeper-Blue | 구현 위치 |
 |--------|-------------|----------|
-| Minimax + Alpha-Beta | Negamax + Alpha-Beta (fail-soft) | `minimax.py` |
-| Principal Variation Search | PVS — null window after first move | `minimax.py` |
-| Iterative Deepening | + Aspiration Windows (±50cp) | `minimax.py` |
-| Check Extension | depth=0에서 체크 시 depth=1 연장 | `minimax.py` |
-| Quiescence Search | + Delta Pruning + SEE < 0 Pruning | `minimax.py` |
-| Transposition Table | Zobrist Hashing (polyglot), always-replace | `minimax.py` |
-| Move Ordering | PV + **SEE** (winning/equal/losing) + Check + Killer + History | `move_ordering.py` |
-| Null Move Pruning | 적응형 R=2/3, major piece guard | `minimax.py` |
-| Late Move Reduction | log 기반: √(d-1)×√moves | `minimax.py` |
-| Futility Pruning | depth 1~2, margin 100/300 cp | `minimax.py` |
-| Evaluation Function | Material + PST + Pawn + Bishop pair + Rook + **Outpost** + **Connected Rooks** + King + Mobility | `evaluation.py` |
-| Opening Book | 미사용 (move 15 이후만 비교) | — |
+| Minimax + Alpha-Beta | Negamax + Alpha-Beta (fail-soft) | `minimax.py`, `engine.c` |
+| Principal Variation Search | PVS — null window after first move | `minimax.py`, `engine.c` |
+| Iterative Deepening | + Aspiration Windows (±50cp) | `minimax.py`, `engine.c` |
+| Check Extension | depth=0에서 체크 시 depth=1 연장 | `minimax.py`, `engine.c` |
+| Quiescence Search | + Delta Pruning + SEE < 0 Pruning | `minimax.py`, `engine.c` |
+| Transposition Table | Zobrist Hashing (polyglot), always-replace | `minimax.py`, `engine.c` |
+| Move Ordering | PV + **SEE** (winning/equal/losing) + Check + Killer + History | `move_ordering.py`, `engine.c` |
+| Null Move Pruning | 적응형 R=2/3, major piece guard | `minimax.py`, `engine.c` |
+| Late Move Reduction | log 기반: √(d-1)×√moves | `minimax.py`, `engine.c` |
+| Futility Pruning | depth 1~2, margin 100/300 cp | `minimax.py`, `engine.c` |
+| Evaluation Function | Material + PST + Pawn + Bishop pair + Rook + **Outpost** + **Connected Rooks** + King + Mobility | `evaluation.py`, `engine.c` |
+| **Opening Book** | **Polyglot 형식, BFS depth=14, Stockfish multipv=3** | **`engine.c` + `book.bin`** |
 | Endgame Tablebase | 미구현 (향후 추가 가능) | — |
 
 ---
@@ -559,3 +719,9 @@ pip install -r requirements-local.txt
 - [x] 통계적 유의성 검증 (t-test / p-value) — `analysis/comparator.py` (`ComparisonReport.ttest()`)
 - [x] **Texel Tuning (ML 평가함수 튜닝)** — `tuning/` 모듈 전체
 - [x] 착수 히트맵 시각화 — `analysis/visualizer.py` (`plot_move_heatmap`)
+- [x] **C 엔진 전환** — `c_engine/engine.c` (비트보드, UCI 프로토콜 완전 구현)
+- [x] **킹 캡처 버그 수정** — 의사합법적 무브 생성에서 상대 킹 제외
+- [x] **Polyglot 오프닝 북** — `c_engine/book.bin` (Stockfish depth=14, BFS ply≤14)
+- [x] **시간 관리 개선** — 남은 시간/인크리먼트 기반 동적 시간 배분
+- [x] **C 엔진 ELO 대전 측정** — ELO 1500: 85%, ELO 2000: 42.5% → 추정 ~ELO 1900
+- [ ] C 엔진 Syzygy 엔드게임 테이블베이스 연동

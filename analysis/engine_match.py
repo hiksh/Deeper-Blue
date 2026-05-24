@@ -136,6 +136,9 @@ class EngineMatch:
     opponent_elo : int | None
         If set, configure Stockfish's UCI_LimitStrength to simulate
         this ELO.  Ignored for other engines.
+    c_engine_path : str | None
+        Path to the compiled C engine binary. If provided, uses it
+        instead of the Python SearchEngine.
     """
 
     def __init__(
@@ -145,12 +148,14 @@ class EngineMatch:
         time_per_move: float = 2.0,
         depth: int = 4,
         opponent_elo: int | None = None,
+        c_engine_path: str | None = None,
     ) -> None:
         self.opponent_path = opponent_path
         self.n_games = n_games
         self.time_per_move = time_per_move
         self.depth = depth
         self.opponent_elo = opponent_elo
+        self.c_engine_path = c_engine_path
 
     # ------------------------------------------------------------------
     # Public API
@@ -162,29 +167,53 @@ class EngineMatch:
         opponent_name = os.path.basename(self.opponent_path).split(".")[0]
         result = MatchResult(opponent_name=opponent_name, opponent_elo=self.opponent_elo)
 
-        with chess.engine.SimpleEngine.popen_uci(self.opponent_path) as opponent:
-            self._configure_opponent(opponent)
+        our_uci = (chess.engine.SimpleEngine.popen_uci(self.c_engine_path)
+                   if self.c_engine_path else None)
+        if our_uci is not None and self.c_engine_path:
+            book_path = os.path.join(os.path.dirname(self.c_engine_path), "book.bin")
+            if os.path.isfile(book_path):
+                try:
+                    our_uci.configure({"BookFile": book_path, "OwnBook": True})
+                except Exception:
+                    pass
+        try:
+            with chess.engine.SimpleEngine.popen_uci(self.opponent_path) as opponent:
+                self._configure_opponent(opponent)
 
-            for i in range(self.n_games):
-                our_color = chess.WHITE if i % 2 == 0 else chess.BLACK
-                color_str = "White" if our_color == chess.WHITE else "Black"
+                for i in range(self.n_games):
+                    our_color = chess.WHITE if i % 2 == 0 else chess.BLACK
+                    color_str = "White" if our_color == chess.WHITE else "Black"
 
-                if verbose:
-                    print(f"  Game {i + 1}/{self.n_games} (Deeper-Blue plays {color_str})...",
-                          end=" ", flush=True)
+                    # Restart C engine between games if it crashed
+                    if our_uci is not None and self.c_engine_path:
+                        try:
+                            our_uci.ping()
+                        except Exception:
+                            try:
+                                our_uci.quit()
+                            except Exception:
+                                pass
+                            our_uci = chess.engine.SimpleEngine.popen_uci(self.c_engine_path)
 
-                t0 = time.time()
-                game_result = self._play_game(i + 1, our_color, opponent)
-                elapsed = time.time() - t0
+                    if verbose:
+                        print(f"  Game {i + 1}/{self.n_games} (Deeper-Blue plays {color_str})...",
+                              end=" ", flush=True)
 
-                result.game_results.append(game_result)
+                    t0 = time.time()
+                    game_result = self._play_game(i + 1, our_color, opponent, our_uci)
+                    elapsed = time.time() - t0
 
-                if verbose:
-                    symbol = {"win": "W", "draw": "D", "loss": "L"}[game_result.result]
-                    print(
-                        f"{symbol}  [{game_result.termination}, "
-                        f"{game_result.half_moves // 2} moves, {elapsed:.0f}s]"
-                    )
+                    result.game_results.append(game_result)
+
+                    if verbose:
+                        symbol = {"win": "W", "draw": "D", "loss": "L"}[game_result.result]
+                        print(
+                            f"{symbol}  [{game_result.termination}, "
+                            f"{game_result.half_moves // 2} moves, {elapsed:.0f}s]"
+                        )
+        finally:
+            if our_uci is not None:
+                our_uci.quit()
 
         return result
 
@@ -197,26 +226,40 @@ class EngineMatch:
         game_number: int,
         our_color: chess.Color,
         opponent: chess.engine.SimpleEngine,
+        our_uci: chess.engine.SimpleEngine | None = None,
     ) -> GameResult:
         board = chess.Board()
-        our_engine = SearchEngine()
+        py_engine = SearchEngine() if our_uci is None else None
         half_moves = 0
 
         while not board.is_game_over() and half_moves < MAX_HALF_MOVES:
             if board.turn == our_color:
-                move, _ = our_engine.search(
-                    board,
-                    max_depth=self.depth,
-                    time_limit=self.time_per_move,
-                )
+                if our_uci is not None:
+                    try:
+                        res = our_uci.play(
+                            board,
+                            chess.engine.Limit(time=self.time_per_move),
+                        )
+                        move = res.move
+                    except Exception:
+                        move = None
+                else:
+                    move, _ = py_engine.search(
+                        board,
+                        max_depth=self.depth,
+                        time_limit=self.time_per_move,
+                    )
                 if move is None:
                     break
             else:
-                result = opponent.play(
-                    board,
-                    chess.engine.Limit(time=self.time_per_move),
-                )
-                move = result.move
+                try:
+                    result = opponent.play(
+                        board,
+                        chess.engine.Limit(time=self.time_per_move),
+                    )
+                    move = result.move
+                except Exception:
+                    move = None
                 if move is None:
                     break
 

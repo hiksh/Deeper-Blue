@@ -66,9 +66,9 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ---
 
-## 프로젝트 현황 (2026-05-19 기준)
+## 프로젝트 현황 (2026-05-24 기준)
 
-### 벤치마크 결과
+### 딥블루 기보 비교 벤치마크
 
 | 버전 | 조건 | 승 | 패 | 무 | 승률 | 평균 델타 |
 |------|------|----|----|-----|------|----------|
@@ -77,6 +77,15 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 | **v3 (튜닝 후 목표)** | depth=4, 22포지션 | ? | ? | ? | **>35%?** | — |
 
 비교 조건: move ≥ 15, middlegame, Stockfish 18 평가, 수당 3초
+
+### C 엔진 ELO 대전 결과 (v4, 2026-05-24)
+
+| 상대 ELO | 게임 수 | 승 | 무 | 패 | 승률 |
+|----------|---------|----|----|-----|------|
+| 1500 | 20 | 16 | 2 | 2 | **85.0%** |
+| 2000 | 20 | 8 | 1 | 11 | **42.5%** |
+
+> 추정 ELO: ~**1850~1950** (qsearch 치명 버그 2개 수정 후)
 
 ---
 
@@ -97,6 +106,12 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 | **[버그수정]** `_SIGMOID_K` 400→200 → gradient 신호 2.7배 강화 | `tuning/texel_tuner.py` | ✅ |
 | **[버그수정]** `_pst_score_p` round() 제거 → Phase 2 PST 538 파라미터 기울기 복구 | `engine/evaluation.py` | ✅ |
 | **[버그수정]** `_king_safety_p` round() 3개 제거 → king_shield·king_open_file·king_eg_center 기울기 복구 | `engine/evaluation.py` | ✅ |
+| **[C엔진]** Perft 커맨드 추가 → 이동 생성기 d1-d5 검증 완료 (표준값 완전 일치) | `c_engine/engine.c` | ✅ |
+| **[C엔진 버그수정]** POLY_PT Knight/Rook 인덱스 스왑 → 오프닝 북 완전 비활성화 수정 | `c_engine/engine.c` | ✅ |
+| **[C엔진 버그수정]** Qsearch 합법성 검사 누락 → 핀 기물 불법 캡처 평가 제거 | `c_engine/engine.c` | ✅ |
+| **[C엔진 버그수정]** Qsearch 체크 처리 누락 → stand_pat 오용·체크메이트 미탐지 수정 | `c_engine/engine.c` | ✅ |
+| **[C엔진 개선]** 게임 히스토리 반복 감지 추가 (`g_game_keys[]`) | `c_engine/engine.c` | ✅ |
+| **[C엔진 개선]** 나이트 아웃포스트 보너스 + 템포 보너스 추가 | `c_engine/engine.c` | ✅ |
 
 ---
 
