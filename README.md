@@ -48,8 +48,14 @@
 Deeper-Blue/
 ├── c_engine/
 │   ├── engine.c           # C 엔진 메인 소스 (UCI 프로토콜, 비트보드, Alpha-Beta)
+│   ├── Makefile           # 빌드 스크립트 (OS 자동 감지, Fathom 자동 활성화)
 │   ├── deeper_blue.exe    # 컴파일된 C 엔진 바이너리 (Windows x64)
 │   ├── poly_random.h      # Polyglot 표준 Zobrist 난수 (781개)
+│   ├── stdendian.h        # 엔디안 변환 유틸리티 (Fathom 의존성)
+│   ├── tbprobe.c          # Fathom Syzygy WDL 프로브 구현
+│   ├── tbprobe.h          # Fathom 헤더
+│   ├── tbchess.c          # Fathom 내부 체스 로직
+│   ├── tbconfig.h         # Fathom 설정 헤더
 │   ├── gen_poly_random.py # poly_random.h 생성 스크립트
 │   ├── gen_book.py        # Polyglot 오프닝 북 생성 (book.bin)
 │   └── book.bin           # 생성된 오프닝 북 (Polyglot 형식)
@@ -69,8 +75,11 @@ Deeper-Blue/
 │   └── templates/
 │       └── index.html     # 웹 체스 UI (chessboard.js)
 ├── data/
-│   └── pgn/               # 1997 Kasparov vs Deep Blue 6경기 PGN
+│   ├── pgn/               # 1997 Kasparov vs Deep Blue 6경기 PGN
+│   └── syzygy/            # Syzygy WDL 테이블베이스 (download_syzygy.py로 다운로드)
 ├── stockfish/             # Stockfish 바이너리 (별도 다운로드 필요)
+├── download_syzygy.py     # 3-4-5기물 Syzygy WDL 파일 다운로드 (~950 MB)
+├── run_book_and_match.py  # book.bin 생성 완료 후 ELO 대전 자동 실행
 ├── main.py                # CLI 진입점
 ├── requirements.txt       # 서버/배포용 의존성
 ├── requirements-local.txt # 로컬 GUI 포함 의존성
@@ -78,6 +87,60 @@ Deeper-Blue/
 ```
 
 ---
+
+## v5 업데이트 내역 (2026-05-30)
+
+### 1. C 엔진 Syzygy 엔드게임 테이블베이스 연동
+
+[Fathom](https://github.com/jdart1/Fathom) 라이브러리를 이용해 **Syzygy WDL 테이블베이스**를 C 엔진에 통합했습니다.
+
+**작동 방식:**
+- 탐색 중 남은 기물 수 ≤ `TB_LARGEST`(최대 5기물)이면 `tb_probe_wdl()` 호출
+- WDL(Win/Draw/Loss) 결과를 즉시 점수로 변환해 반환 → 이하 노드 탐색 완전 생략
+- 캐슬링 권한 없는 포지션에서만 프로브 (Syzygy 테이블 조건)
+
+```c
+if (g_tb_enabled && b->cr == 0 && n_pieces <= TB_LARGEST) {
+    unsigned wdl = tb_probe_wdl(...);
+    // TB_WIN  → +(MATE_SCORE - ply)
+    // TB_LOSS → -(MATE_SCORE - ply)
+    // TB_DRAW → 0
+}
+```
+
+**UCI 옵션:**
+```
+setoption name SyzygyPath value C:/path/to/data/syzygy
+```
+
+**효과:** 5기물 이하 엔드게임에서 완벽한 플레이. KQvK, KRvK, KPPvKP 등 이론적 무승부/승리를 정확히 처리.
+
+### 2. Makefile 추가
+
+OS 자동 감지 및 Fathom 자동 활성화 빌드 시스템.
+
+```bash
+# Windows (MinGW) / Linux 모두 동일 명령
+cd c_engine
+make
+
+# Fathom 없이 빌드 (tbprobe.c 없으면 자동으로 플래그 없이 빌드)
+```
+
+`tbprobe.c`가 존재하면 자동으로 `-DFATHOM` 플래그와 함께 빌드됩니다.
+
+### 3. Syzygy WDL 다운로드 스크립트
+
+3-4-5기물 WDL 파일(`.rtbw`)을 Sesse 미러에서 자동 다운로드합니다.
+
+```bash
+python download_syzygy.py             # → data/syzygy/ (기본)
+python download_syzygy.py /path/to/tb  # → 지정 경로
+```
+
+- 총 용량: ~950 MB (WDL only, DTZ 제외)
+- 이미 존재하는 파일은 자동 건너뜀 (재시작 안전)
+- 완료 후 UCI `setoption` 명령어 자동 출력
 
 ---
 
@@ -148,12 +211,14 @@ Python 탐색 엔진을 **순수 C(C99)로 완전 재작성**했습니다.
 | 무브 생성 | 라이브러리 위임 | 비트마스크 기반 gen_pawn/piece/castling |
 | 탐색 속도 | depth=4 수준 | depth=8~12 실용적 |
 | UCI 프로토콜 | 없음 (Python 내부 호출) | 완전 구현 (arena 호환) |
-| 엔드게임 테이블베이스 | Syzygy 연동 | 미구현 (향후 추가 가능) |
+| 엔드게임 테이블베이스 | Syzygy 연동 | **v5에서 Fathom으로 통합** |
 
 **C 엔진 컴파일:**
 ```bash
 cd c_engine
-gcc -O3 -o deeper_blue.exe engine.c -lm
+make                    # Makefile 사용 (권장)
+# 또는 직접:
+gcc -O3 -march=native -std=c11 -DFATHOM -I. -o deeper_blue.exe engine.c tbprobe.c -lm
 ```
 
 ### 2. 버그픽스: 킹 캡처 허용 문제 (KING_GONE)
@@ -317,6 +382,11 @@ depth 1~2에서 정적 평가 + 마진이 alpha 이하면 조용한 무브를 �
 |-------|------|
 | 1 | 100 cp |
 | 2 | 300 cp |
+
+### 10. Syzygy 엔드게임 테이블베이스 (C 엔진)
+
+탐색 중 남은 기물이 5개 이하이면 Fathom WDL 프로브로 완벽한 엔드게임 플레이를 보장합니다.  
+프로브 성공 시 해당 노드 이하의 탐색을 완전히 생략해 시간도 절약됩니다.
 
 ---
 
@@ -665,12 +735,34 @@ pip install -r requirements.txt
 pip install -r requirements-local.txt
 ```
 
-### 2. Stockfish 설치 (비교 모드 필요)
+### 2. C 엔진 빌드
+
+```bash
+cd c_engine
+make          # Syzygy 지원 포함 (tbprobe.c 자동 감지)
+```
+
+> MinGW(Windows) 또는 GCC(Linux) 필요. `-march=native -O3`으로 최적화 빌드됩니다.
+
+### 3. Stockfish 설치 (비교 모드 필요)
 
 [https://stockfishchess.org/download/](https://stockfishchess.org/download/) 에서 다운로드 후  
 `stockfish/` 디렉토리에 바이너리를 배치하세요.
 
 > 웹 모드(`web/app.py`)와 GUI 모드(`play-human`)는 Stockfish 없이 동작합니다.
+
+### 4. Syzygy 테이블베이스 다운로드 (선택, ~950 MB)
+
+```bash
+python download_syzygy.py
+# → data/syzygy/ 에 3-4-5기물 WDL 파일 저장
+
+# C 엔진에서 활성화 (UCI 커맨드 또는 arena 설정)
+setoption name SyzygyPath value C:\path\to\data\syzygy
+```
+
+> WDL 파일만 다운로드하므로 완벽한 승리/패배/무승부 판정이 가능합니다.  
+> DTZ(최적 수까지의 거리) 파일은 다운로드하지 않아도 기본 기능에 지장 없습니다.
 
 ---
 
@@ -708,7 +800,7 @@ pip install -r requirements-local.txt
 | Futility Pruning | depth 1~2, margin 100/300 cp | `minimax.py`, `engine.c` |
 | Evaluation Function | Material + PST + Pawn + Bishop pair + Rook + **Outpost** + **Connected Rooks** + King + Mobility | `evaluation.py`, `engine.c` |
 | **Opening Book** | **Polyglot 형식, BFS depth=14, Stockfish multipv=3** | **`engine.c` + `book.bin`** |
-| Endgame Tablebase | 미구현 (향후 추가 가능) | — |
+| **Endgame Tablebase** | **Syzygy WDL (Fathom), 3-4-5기물 완벽 플레이** | **`engine.c` + `tbprobe.c`** |
 
 ---
 
@@ -724,4 +816,4 @@ pip install -r requirements-local.txt
 - [x] **Polyglot 오프닝 북** — `c_engine/book.bin` (Stockfish depth=14, BFS ply≤14)
 - [x] **시간 관리 개선** — 남은 시간/인크리먼트 기반 동적 시간 배분
 - [x] **C 엔진 ELO 대전 측정** — ELO 1500: 85%, ELO 2000: 42.5% → 추정 ~ELO 1900
-- [ ] C 엔진 Syzygy 엔드게임 테이블베이스 연동
+- [x] **C 엔진 Syzygy 테이블베이스** — Fathom WDL, 5기물 이하 완벽 엔드게임

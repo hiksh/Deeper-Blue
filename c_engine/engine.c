@@ -22,6 +22,11 @@
 #include <ctype.h>
 #include "poly_random.h"
 
+#ifdef FATHOM
+#include "tbprobe.h"
+static bool g_tb_enabled = false;
+#endif
+
 #ifdef _WIN32
 #include <windows.h>
 static int64_t get_time_ms(void) {
@@ -1332,6 +1337,34 @@ static int negamax(Board *b, int depth, int alpha, int beta, int ply) {
         return in_chk ? -(MATE_SCORE - ply) : 0;
     }
 
+#ifdef FATHOM
+    /* Syzygy WDL probe: perfect endgame play when pieces <= TB_LARGEST */
+    if (g_tb_enabled && b->cr == 0) {
+        int n_pieces = (int)__builtin_popcountll(b->occ[2]);
+        if ((unsigned)n_pieces <= TB_LARGEST) {
+            unsigned ep_sq = (b->ep == NO_SQ) ? 0 : (unsigned)b->ep;
+            unsigned wdl = tb_probe_wdl(
+                b->occ[WHITE], b->occ[BLACK],
+                b->bb[WHITE][KING]   | b->bb[BLACK][KING],
+                b->bb[WHITE][QUEEN]  | b->bb[BLACK][QUEEN],
+                b->bb[WHITE][ROOK]   | b->bb[BLACK][ROOK],
+                b->bb[WHITE][BISHOP] | b->bb[BLACK][BISHOP],
+                b->bb[WHITE][KNIGHT] | b->bb[BLACK][KNIGHT],
+                b->bb[WHITE][PAWN]   | b->bb[BLACK][PAWN],
+                (unsigned)b->hmc, 0, ep_sq, b->stm == WHITE
+            );
+            if (wdl != TB_RESULT_FAILED) {
+                int score = (wdl == TB_WIN)  ?  (MATE_SCORE - ply - 1) :
+                            (wdl == TB_LOSS) ? -(MATE_SCORE - ply - 1) : 0;
+                int flag  = (wdl == TB_WIN)  ? TT_LOWER :
+                            (wdl == TB_LOSS) ? TT_UPPER : TT_EXACT;
+                tt_store(b->key, 99, score, flag, MOVE_NONE);
+                return score;
+            }
+        }
+    }
+#endif
+
     sort_moves(b, &legal, ply, pv_move);
 
     int best_score = -INF;
@@ -1834,6 +1867,9 @@ int main(void) {
             fprintf(stdout, "id author DeeperBlue\n");
             fprintf(stdout, "option name OwnBook type check default true\n");
             fprintf(stdout, "option name BookFile type string default book.bin\n");
+#ifdef FATHOM
+            fprintf(stdout, "option name SyzygyPath type string default <empty>\n");
+#endif
             fprintf(stdout, "uciok\n");
             fflush(stdout);
         } else if (strncmp(line,"setoption",9)==0) {
@@ -1857,6 +1893,24 @@ int main(void) {
                               g_book_path[len-1]=='\n')) g_book_path[--len]=0;
                         book_open(g_book_path);
                     }
+#ifdef FATHOM
+                } else if (strncmp(p,"SyzygyPath",10)==0) {
+                    p+=10; while(*p==' ')p++;
+                    if (strncmp(p,"value",5)==0) {
+                        p+=5; while(*p==' ')p++;
+                        char tb_path[512];
+                        strncpy(tb_path, p, sizeof(tb_path)-1);
+                        int len=(int)strlen(tb_path);
+                        while(len>0&&(tb_path[len-1]==' '||tb_path[len-1]=='\r'||
+                              tb_path[len-1]=='\n')) tb_path[--len]=0;
+                        g_tb_enabled = tb_init(tb_path);
+                        if (g_tb_enabled)
+                            fprintf(stdout, "info string Syzygy tablebases loaded (%u pieces)\n", TB_LARGEST);
+                        else
+                            fprintf(stdout, "info string Syzygy tablebase load FAILED: %s\n", tb_path);
+                        fflush(stdout);
+                    }
+#endif
                 }
             }
         } else if (strcmp(line,"isready")==0) {

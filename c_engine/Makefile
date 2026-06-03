@@ -1,7 +1,7 @@
 # Makefile for Deeper-Blue C Engine
 
 CC      = gcc
-CFLAGS  = -O3 -march=native -std=c11 -Wall -Wextra -lm
+CFLAGS  = -O3 -march=native -std=c11 -Wall -Wextra
 TARGET_WIN = deeper_blue.exe
 TARGET_LIN = deeper_blue
 
@@ -14,10 +14,20 @@ else
     RM     = rm -f
 endif
 
+# Auto-enable Fathom Syzygy tablebases if tbprobe.c is present
+ifneq ($(wildcard tbprobe.c),)
+    FATHOM_FLAGS = -DFATHOM
+    FATHOM_SRCS  = tbprobe.c
+    $(info Fathom detected — building with Syzygy support)
+else
+    FATHOM_FLAGS =
+    FATHOM_SRCS  =
+endif
+
 all: $(TARGET)
 
-$(TARGET): engine.c
-	$(CC) $(CFLAGS) -o $@ engine.c -lm
+$(TARGET): engine.c $(FATHOM_SRCS)
+	$(CC) $(CFLAGS) $(FATHOM_FLAGS) -I. -o $@ engine.c $(FATHOM_SRCS) -lm
 
 clean:
 	$(RM) $(TARGET_WIN) $(TARGET_LIN)

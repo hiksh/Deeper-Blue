@@ -31,6 +31,19 @@ stockfish/*.exe
 stockfish/stockfish
 stockfish/stockfish-*
 
+# C engine binaries
+c_engine/*.exe
+c_engine/deeper_blue
+
+# Syzygy tablebase files (large binaries, ~950 MB)
+data/syzygy/
+
+# Logs
+logs/
+
+# Claude Code internals
+.claude/worktrees/
+
 # IDE
 .vscode/
 .idea/

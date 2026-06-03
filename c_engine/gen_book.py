@@ -16,9 +16,9 @@ STOCKFISH = sys.argv[1] if len(sys.argv) > 1 else \
                  "stockfish-windows-x86-64-avx2.exe")
 OUT = os.path.join(os.path.dirname(__file__), "book.bin")
 
-MULTIPV  = 2    # top N moves per position
-SF_DEPTH = 14   # Stockfish analysis depth
-MAX_PLY  = 8    # explore opening up to this ply (half-moves)
+MULTIPV  = 3    # top N moves per position
+SF_DEPTH = 18   # Stockfish analysis depth
+MAX_PLY  = 12   # explore opening up to this ply (half-moves)
 MIN_MATE_DIFF = 50  # centipawn threshold to include a move
 
 

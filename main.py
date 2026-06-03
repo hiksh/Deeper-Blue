@@ -164,7 +164,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     print(f"FEN: {args.fen}")
     print(f"Side to move: {'White' if board.turn == chess.WHITE else 'Black'}\n")
 
-    engine = SearchEngine()
+    engine = SearchEngine(tablebase_path=getattr(args, "tablebase", None))
     print(f"Searching (depth={args.depth}, time_limit={args.time}s)...")
     move, score = engine.search(board, max_depth=args.depth, time_limit=args.time)
 
@@ -263,7 +263,7 @@ def _save_match_csv(result, filepath: str) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_play(args: argparse.Namespace) -> None:
-    engine = SearchEngine()
+    engine = SearchEngine(tablebase_path=getattr(args, "tablebase", None))
     print("=== Deeper-Blue Interactive Mode ===")
     print("Enter a FEN string and the engine will suggest its best move.")
     print("Type 'quit' to exit.\n")
@@ -439,6 +439,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_analyze.add_argument("--time", type=float, default=10.0, metavar="SEC",
                             help="Time limit in seconds (default: 10.0)")
     p_analyze.add_argument("--stockfish", **sf_kwargs)
+    p_analyze.add_argument("--tablebase", default=None, metavar="DIR",
+                            help="Path to Syzygy tablebase directory")
 
     # --- play ---
     p_play = sub.add_parser("play", help="Interactive FEN-input mode (CLI)")
@@ -446,6 +448,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Search depth (default: 4)")
     p_play.add_argument("--time", type=float, default=5.0, metavar="SEC",
                          help="Time limit per move (default: 5.0)")
+    p_play.add_argument("--tablebase", default=None, metavar="DIR",
+                         help="Path to Syzygy tablebase directory")
 
     # --- play-human ---
     p_human = sub.add_parser("play-human", help="Interactive GUI: play against Deeper-Blue (pygame)")
