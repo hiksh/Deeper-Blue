@@ -66,7 +66,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ---
 
-## 프로젝트 현황 (2026-05-24 기준)
+## 프로젝트 현황 (2026-06-03 기준)
 
 ### 딥블루 기보 비교 벤치마크
 
@@ -78,14 +78,14 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 비교 조건: move ≥ 15, middlegame, Stockfish 18 평가, 수당 3초
 
-### C 엔진 ELO 대전 결과 (v4, 2026-05-24)
+### C 엔진 ELO 대전 결과 (v5, 2026-06-03)
 
 | 상대 ELO | 게임 수 | 승 | 무 | 패 | 승률 |
 |----------|---------|----|----|-----|------|
 | 1500 | 20 | 16 | 2 | 2 | **85.0%** |
 | 2000 | 20 | 8 | 1 | 11 | **42.5%** |
 
-> 추정 ELO: ~**1850~1950** (qsearch 치명 버그 2개 수정 후)
+> 추정 ELO: ~**1850~1950** (v4 기준 측정 / Syzygy 연동 후 재측정 예정)
 
 ---
 
@@ -112,6 +112,9 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 | **[C엔진 버그수정]** Qsearch 체크 처리 누락 → stand_pat 오용·체크메이트 미탐지 수정 | `c_engine/engine.c` | ✅ |
 | **[C엔진 개선]** 게임 히스토리 반복 감지 추가 (`g_game_keys[]`) | `c_engine/engine.c` | ✅ |
 | **[C엔진 개선]** 나이트 아웃포스트 보너스 + 템포 보너스 추가 | `c_engine/engine.c` | ✅ |
+| **[C엔진 v5]** Fathom Syzygy WDL 테이블베이스 연동 → 5기물 이하 완벽 엔드게임 | `c_engine/engine.c`, `c_engine/tbprobe.c` | ✅ |
+| **[C엔진 v5]** Makefile 추가 → OS 자동 감지, tbprobe.c 유무로 Fathom 자동 활성화 | `c_engine/Makefile` | ✅ |
+| **[v5]** download_syzygy.py → 3-4-5기물 WDL 자동 다운로드 (~950 MB) | `download_syzygy.py` | ✅ |
 
 ---
 
