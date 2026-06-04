@@ -25,6 +25,9 @@ Usage:
 
 from __future__ import annotations
 
+import concurrent.futures
+import os
+import signal
 import time
 from dataclasses import dataclass, field
 
@@ -32,6 +35,48 @@ import chess
 import chess.engine
 
 from engine.minimax import SearchEngine
+
+# Shared thread pool used to run blocking engine.play() calls under a
+# wall-clock watchdog.  When a move exceeds the watchdog timeout the engine
+# is considered hung; we kill its process (which unblocks the worker thread)
+# and abort that game.
+_WATCHDOG_EXEC = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+
+def _timed_move(engine, board, limit, watchdog_s):
+    """
+    Run engine.play(board, limit) but give up after watchdog_s seconds.
+
+    Returns (move, hung): hung=True if the watchdog fired or the engine
+    raised — in both cases the caller should kill+restart the engine and
+    discard the game.
+    """
+    fut = _WATCHDOG_EXEC.submit(engine.play, board, limit)
+    try:
+        res = fut.result(timeout=watchdog_s)
+        return res.move, False
+    except concurrent.futures.TimeoutError:
+        return None, True
+    except Exception:
+        return None, True
+
+
+def _kill_engine(engine):
+    """Forcibly terminate an engine subprocess (best-effort)."""
+    pid = None
+    try:
+        pid = engine.transport.get_pid()
+    except Exception:
+        pid = None
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)   # Windows: TerminateProcess
+        except Exception:
+            pass
+    try:
+        engine.quit()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +194,7 @@ class EngineMatch:
         depth: int = 4,
         opponent_elo: int | None = None,
         c_engine_path: str | None = None,
+        watchdog_factor: float = 4.0,
     ) -> None:
         self.opponent_path = opponent_path
         self.n_games = n_games
@@ -156,66 +202,101 @@ class EngineMatch:
         self.depth = depth
         self.opponent_elo = opponent_elo
         self.c_engine_path = c_engine_path
+        # A move taking longer than max(time_per_move * factor, 25s) is
+        # treated as a hang → kill engine, abort & replay the game.
+        self.watchdog_s = max(time_per_move * watchdog_factor, 25.0)
+        self._our_uci = None
+        self._py_engine = None
+        self._opp = None
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def play_match(self, verbose: bool = True) -> MatchResult:
-        """Play n_games games and return aggregated results."""
-        import os
+        """
+        Play games until n_games *complete* normally, returning aggregated
+        results.  Games where an engine hangs past the watchdog timeout are
+        aborted (engine killed + restarted) and replayed, so the final tally
+        contains only clean games.
+        """
         opponent_name = os.path.basename(self.opponent_path).split(".")[0]
         result = MatchResult(opponent_name=opponent_name, opponent_elo=self.opponent_elo)
 
-        our_uci = (chess.engine.SimpleEngine.popen_uci(self.c_engine_path)
-                   if self.c_engine_path else None)
-        if our_uci is not None and self.c_engine_path:
-            book_path = os.path.join(os.path.dirname(self.c_engine_path), "book.bin")
-            if os.path.isfile(book_path):
-                try:
-                    our_uci.configure({"BookFile": book_path, "OwnBook": True})
-                except Exception:
-                    pass
+        self._our_uci = self._spawn_our() if self.c_engine_path else None
+        self._py_engine = SearchEngine() if not self.c_engine_path else None
+        self._opp = self._spawn_opponent()
+
+        aborts = 0
+        attempts = 0
+        max_attempts = self.n_games * 5
+
         try:
-            with chess.engine.SimpleEngine.popen_uci(self.opponent_path) as opponent:
-                self._configure_opponent(opponent)
+            while len(result.game_results) < self.n_games and attempts < max_attempts:
+                attempts += 1
+                idx = len(result.game_results)
+                our_color = chess.WHITE if idx % 2 == 0 else chess.BLACK
+                color_str = "White" if our_color == chess.WHITE else "Black"
 
-                for i in range(self.n_games):
-                    our_color = chess.WHITE if i % 2 == 0 else chess.BLACK
-                    color_str = "White" if our_color == chess.WHITE else "Black"
+                if verbose:
+                    print(f"  Game {idx + 1}/{self.n_games} (Deeper-Blue plays {color_str})...",
+                          end=" ", flush=True)
 
-                    # Restart C engine between games if it crashed
-                    if our_uci is not None and self.c_engine_path:
-                        try:
-                            our_uci.ping()
-                        except Exception:
-                            try:
-                                our_uci.quit()
-                            except Exception:
-                                pass
-                            our_uci = chess.engine.SimpleEngine.popen_uci(self.c_engine_path)
+                t0 = time.time()
+                game_result = self._play_game(idx + 1, our_color)
+                elapsed = time.time() - t0
 
+                if game_result.result == "aborted":
+                    aborts += 1
                     if verbose:
-                        print(f"  Game {i + 1}/{self.n_games} (Deeper-Blue plays {color_str})...",
-                              end=" ", flush=True)
+                        print(f"ABORTED [watchdog hang on {game_result.termination}, "
+                              f"engine restarted, {elapsed:.0f}s] — replaying")
+                    continue
 
-                    t0 = time.time()
-                    game_result = self._play_game(i + 1, our_color, opponent, our_uci)
-                    elapsed = time.time() - t0
-
-                    result.game_results.append(game_result)
-
-                    if verbose:
-                        symbol = {"win": "W", "draw": "D", "loss": "L"}[game_result.result]
-                        print(
-                            f"{symbol}  [{game_result.termination}, "
-                            f"{game_result.half_moves // 2} moves, {elapsed:.0f}s]"
-                        )
+                result.game_results.append(game_result)
+                if verbose:
+                    symbol = {"win": "W", "draw": "D", "loss": "L"}[game_result.result]
+                    print(
+                        f"{symbol}  [{game_result.termination}, "
+                        f"{game_result.half_moves // 2} moves, {elapsed:.0f}s]"
+                    )
         finally:
-            if our_uci is not None:
-                our_uci.quit()
+            if verbose and aborts:
+                print(f"  ({aborts} game(s) aborted by watchdog and replayed)")
+            for e in (self._our_uci, self._opp):
+                if e is not None:
+                    try:
+                        e.quit()
+                    except Exception:
+                        pass
 
         return result
+
+    # ------------------------------------------------------------------
+    # Engine spawning (with restart support)
+    # ------------------------------------------------------------------
+
+    def _spawn_our(self) -> chess.engine.SimpleEngine:
+        eng = chess.engine.SimpleEngine.popen_uci(self.c_engine_path)
+        book_path = os.path.join(os.path.dirname(self.c_engine_path), "book.bin")
+        if os.path.isfile(book_path):
+            try:
+                eng.configure({"BookFile": book_path, "OwnBook": True})
+            except Exception:
+                pass
+        return eng
+
+    def _spawn_opponent(self) -> chess.engine.SimpleEngine:
+        eng = chess.engine.SimpleEngine.popen_uci(self.opponent_path)
+        if self.opponent_elo is not None:
+            try:
+                eng.configure({
+                    "UCI_LimitStrength": True,
+                    "UCI_Elo": self.opponent_elo,
+                })
+            except chess.engine.EngineError:
+                pass   # engine doesn't support strength limiting
+        return eng
 
     # ------------------------------------------------------------------
     # Single game
@@ -225,43 +306,41 @@ class EngineMatch:
         self,
         game_number: int,
         our_color: chess.Color,
-        opponent: chess.engine.SimpleEngine,
-        our_uci: chess.engine.SimpleEngine | None = None,
     ) -> GameResult:
         board = chess.Board()
-        py_engine = SearchEngine() if our_uci is None else None
         half_moves = 0
+        limit = chess.engine.Limit(time=self.time_per_move)
 
         while not board.is_game_over() and half_moves < MAX_HALF_MOVES:
-            if board.turn == our_color:
-                if our_uci is not None:
-                    try:
-                        res = our_uci.play(
-                            board,
-                            chess.engine.Limit(time=self.time_per_move),
-                        )
-                        move = res.move
-                    except Exception:
-                        move = None
-                else:
-                    move, _ = py_engine.search(
-                        board,
-                        max_depth=self.depth,
-                        time_limit=self.time_per_move,
-                    )
-                if move is None:
-                    break
+            our_turn = (board.turn == our_color)
+
+            if our_turn and self._our_uci is None:
+                # In-process Python engine — no subprocess to watchdog.
+                move, _ = self._py_engine.search(
+                    board, max_depth=self.depth, time_limit=self.time_per_move
+                )
             else:
-                try:
-                    result = opponent.play(
-                        board,
-                        chess.engine.Limit(time=self.time_per_move),
+                engine = self._our_uci if our_turn else self._opp
+                move, hung = _timed_move(engine, board, limit, self.watchdog_s)
+                if hung:
+                    # Kill the stuck engine (frees the worker thread) and
+                    # restart it, then abort this game for replay.
+                    _kill_engine(engine)
+                    side = "our_engine" if our_turn else "opponent"
+                    if our_turn:
+                        self._our_uci = self._spawn_our()
+                    else:
+                        self._opp = self._spawn_opponent()
+                    return GameResult(
+                        game_number=game_number,
+                        our_color=our_color,
+                        result="aborted",
+                        termination=side,
+                        half_moves=half_moves,
                     )
-                    move = result.move
-                except Exception:
-                    move = None
-                if move is None:
-                    break
+
+            if move is None:
+                break
 
             board.push(move)
             half_moves += 1
@@ -285,19 +364,3 @@ class EngineMatch:
             termination=termination,
             half_moves=half_moves,
         )
-
-    # ------------------------------------------------------------------
-    # Opponent configuration
-    # ------------------------------------------------------------------
-
-    def _configure_opponent(self, opponent: chess.engine.SimpleEngine) -> None:
-        """Apply ELO limiting if requested (Stockfish-specific options)."""
-        if self.opponent_elo is None:
-            return
-        try:
-            opponent.configure({
-                "UCI_LimitStrength": True,
-                "UCI_Elo": self.opponent_elo,
-            })
-        except chess.engine.EngineError:
-            pass   # engine doesn't support strength limiting — play at full strength
