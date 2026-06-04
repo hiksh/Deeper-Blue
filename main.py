@@ -216,9 +216,12 @@ def cmd_match(args: argparse.Namespace) -> None:
         print("    python main.py match --opponent stockfish/stockfish.exe --elo 2200")
         sys.exit(1)
 
+    clock = getattr(args, "clock", None)
+    inc = getattr(args, "increment", 0.0)
     elo_str = f" (ELO {args.elo})" if args.elo else " (full strength)"
+    tc_str = f"Clock: {clock:.0f}s + {inc:.0f}s/move" if clock else f"Time/move: {args.time}s"
     print(f"Opponent : {args.opponent}{elo_str}")
-    print(f"Games    : {args.games}  |  Depth: {args.depth}  |  Time/move: {args.time}s\n")
+    print(f"Games    : {args.games}  |  Depth: {args.depth}  |  {tc_str}\n")
 
     from analysis.comparator import find_c_engine
     c_path = find_c_engine()
@@ -232,6 +235,8 @@ def cmd_match(args: argparse.Namespace) -> None:
         depth=args.depth,
         opponent_elo=args.elo,
         c_engine_path=c_path,
+        clock=clock,
+        increment=inc,
     )
 
     result = match.play_match(verbose=True)
@@ -474,7 +479,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_match.add_argument("--depth", type=int, default=4, metavar="N",
                           help="Deeper-Blue search depth (default: 4)")
     p_match.add_argument("--time", type=float, default=2.0, metavar="SEC",
-                          help="Time per move in seconds for both engines (default: 2.0)")
+                          help="Fixed time per move in seconds (used when --clock is not set; default: 2.0)")
+    p_match.add_argument("--clock", type=float, default=None, metavar="SEC",
+                          help="Real chess clock per side in seconds (e.g. 600 = 10 min). Overrides --time.")
+    p_match.add_argument("--increment", type=float, default=0.0, metavar="SEC",
+                          help="Fischer increment per move in seconds (default: 0)")
     p_match.add_argument("--output", default=None, metavar="FILE",
                           help="Save game-by-game results to CSV")
 

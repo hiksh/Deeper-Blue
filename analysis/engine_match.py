@@ -195,6 +195,8 @@ class EngineMatch:
         opponent_elo: int | None = None,
         c_engine_path: str | None = None,
         watchdog_factor: float = 4.0,
+        clock: float | None = None,
+        increment: float = 0.0,
     ) -> None:
         self.opponent_path = opponent_path
         self.n_games = n_games
@@ -202,6 +204,11 @@ class EngineMatch:
         self.depth = depth
         self.opponent_elo = opponent_elo
         self.c_engine_path = c_engine_path
+        # Real chess clock per side (seconds) + Fischer increment.  When set,
+        # each engine manages its own time from a depleting clock (e.g. 10+0
+        # = clock=600, increment=0) instead of a fixed per-move budget.
+        self.clock = clock
+        self.increment = increment
         # A move taking longer than max(time_per_move * factor, 25s) is
         # treated as a hang → kill engine, abort & replay the game.
         self.watchdog_s = max(time_per_move * watchdog_factor, 25.0)
@@ -309,19 +316,37 @@ class EngineMatch:
     ) -> GameResult:
         board = chess.Board()
         half_moves = 0
-        limit = chess.engine.Limit(time=self.time_per_move)
+        use_clock = self.clock is not None
+        clocks = {chess.WHITE: self.clock, chess.BLACK: self.clock} if use_clock else None
 
         while not board.is_game_over() and half_moves < MAX_HALF_MOVES:
             our_turn = (board.turn == our_color)
+            mover = board.turn
 
             if our_turn and self._our_uci is None:
-                # In-process Python engine — no subprocess to watchdog.
+                # In-process Python engine — no subprocess to watchdog/clock.
                 move, _ = self._py_engine.search(
                     board, max_depth=self.depth, time_limit=self.time_per_move
                 )
             else:
                 engine = self._our_uci if our_turn else self._opp
-                move, hung = _timed_move(engine, board, limit, self.watchdog_s)
+                if use_clock:
+                    limit = chess.engine.Limit(
+                        white_clock=clocks[chess.WHITE], black_clock=clocks[chess.BLACK],
+                        white_inc=self.increment, black_inc=self.increment,
+                    )
+                    # Sleep guard: an engine cannot legitimately exceed its own
+                    # remaining clock, so anything past clock+60s is a host
+                    # suspend → abort.
+                    wd = clocks[mover] + 60.0
+                else:
+                    limit = chess.engine.Limit(time=self.time_per_move)
+                    wd = self.watchdog_s
+
+                t_move = time.time()
+                move, hung = _timed_move(engine, board, limit, wd)
+                move_elapsed = time.time() - t_move
+
                 if hung:
                     # Kill the stuck engine (frees the worker thread) and
                     # restart it, then abort this game for replay.
@@ -338,6 +363,21 @@ class EngineMatch:
                         termination=side,
                         half_moves=half_moves,
                     )
+
+                if use_clock:
+                    clocks[mover] -= move_elapsed
+                    if clocks[mover] <= 0:
+                        # Flag fall: the side to move ran out of time → loses.
+                        winner = not mover
+                        result_str = "win" if winner == our_color else "loss"
+                        return GameResult(
+                            game_number=game_number,
+                            our_color=our_color,
+                            result=result_str,
+                            termination="time_forfeit",
+                            half_moves=half_moves,
+                        )
+                    clocks[mover] += self.increment
 
             if move is None:
                 break
