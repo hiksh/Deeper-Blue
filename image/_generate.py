@@ -183,6 +183,51 @@ def render_deepblue_highlight():
     print("  saved deepblue_highlight_g1.png")
 
 
+def render_elo_progression():
+    """Match score% vs ELO-limited Stockfish across versions v3/v4/v5."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    groups = ["vs ELO 1500", "vs ELO 2000"]
+    x = np.arange(2)
+    w = 0.26
+    v3 = [40.0, 5.0]      # 10 games each
+    v4 = [85.0, 42.5]     # 20 games each (reliable baseline)
+    v5_1500 = 85.7        # 7 clean games
+    v5_2000_partial = 70.0  # 5 clean games (3W/1D/1L), sleep-interrupted
+
+    fig, ax = plt.subplots(figsize=(7.2, 4.6))
+    ax.bar(x - w, v3, w, label="v3 (C engine)", color="#cc5555")
+    ax.bar(x, v4, w, label="v4 (qsearch fix, 20G)", color="#5a8fc7")
+    ax.bar(x[0] + w, v5_1500, w, label="v5 (+watchdog)", color="#2f6fb3")
+    ax.bar(x[1] + w, v5_2000_partial, w, color="#2f6fb3",
+           hatch="//", alpha=0.5, edgecolor="white")
+
+    for xi, val in zip(x - w, v3):
+        ax.text(xi, val + 1.5, f"{val:.0f}%", ha="center", fontsize=9)
+    for xi, val in zip(x, v4):
+        ax.text(xi, val + 1.5, f"{val:.1f}%", ha="center", fontsize=9)
+    ax.text(x[0] + w, v5_1500 + 1.5, f"{v5_1500:.1f}%", ha="center", fontsize=9)
+    ax.text(x[1] + w, v5_2000_partial + 1.5, "partial\n(n=5)",
+            ha="center", fontsize=8, color="#444")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(groups)
+    ax.set_ylabel("Score %  (win=1, draw=0.5)")
+    ax.set_ylim(0, 100)
+    ax.axhline(50, color="grey", ls="--", lw=0.8, alpha=0.5)
+    ax.set_title("Match Score vs ELO-limited Stockfish\n"
+                 "v3 -> v4: a single qsearch bugfix; v5 2000 partial (host sleep)")
+    ax.legend(loc="upper right", fontsize=9)
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT, "elo_progression.png"), dpi=140)
+    plt.close(fig)
+    print("  saved elo_progression.png")
+
+
 if __name__ == "__main__":
     print("Rendering interface screenshots...")
     render_interface_shots()
@@ -190,4 +235,5 @@ if __name__ == "__main__":
     render_deepblue_highlight()
     print("Rendering charts...")
     render_winrate_chart()
+    render_elo_progression()
     print("Done.")
