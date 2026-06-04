@@ -196,7 +196,7 @@ def render_elo_progression():
     # v3/v4 measured at ~2s/move; v5 at standard 10min+0.
     v3 = [40.0, 5.0]            # 10 games each (1500, 2000)
     v4 = [85.0, 42.5]           # 20 games each (reliable baseline)
-    v5 = [66.7, 0.0]            # 10+0: 2000 (6G, 4W2L), 2600 (4G valid, 0W4L)
+    v5 = [66.7, 0.0]            # 10+0: 2000 (6G, 4W2L), 2600 (6G, 0W6L)
 
     fig, ax = plt.subplots(figsize=(7.6, 4.7))
     ax.bar([0 - w, 1 - w], v3, w, label="v3 (~2s/move)", color="#cc5555")
@@ -208,7 +208,7 @@ def render_elo_progression():
     for xi, val in zip([0, 1], v4):
         ax.text(xi, val + 1.5, f"{val:.1f}%", ha="center", fontsize=9)
     ax.text(1 + w, v5[0] + 1.5, f"{v5[0]:.1f}%\n(4W/2L)", ha="center", fontsize=8)
-    ax.text(2 + w, v5[1] + 1.5, "0%\n(0W/4L)", ha="center", fontsize=8)
+    ax.text(2 + w, v5[1] + 1.5, "0%\n(0W/6L)", ha="center", fontsize=8)
 
     ax.set_xticks(x)
     ax.set_xticklabels(groups)
@@ -217,7 +217,7 @@ def render_elo_progression():
     ax.axhline(50, color="grey", ls="--", lw=0.8, alpha=0.5)
     ax.set_title("Match Score vs ELO-limited Stockfish\n"
                  "v3->v4: a single qsearch bugfix  |  v5 at standard 10min+0 "
-                 "(6G vs 2000, 4G vs 2600)")
+                 "(6 games each)")
     ax.legend(loc="upper right", fontsize=9)
     ax.grid(axis="y", alpha=0.25)
     fig.tight_layout()
