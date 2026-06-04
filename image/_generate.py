@@ -190,28 +190,25 @@ def render_elo_progression():
     import matplotlib.pyplot as plt
     import numpy as np
 
-    groups = ["vs ELO 1500", "vs ELO 2000"]
-    x = np.arange(2)
+    groups = ["vs ELO 1500", "vs ELO 2000", "vs ELO 2600"]
+    x = np.arange(3)
     w = 0.26
-    v3 = [40.0, 5.0]      # 10 games each
-    v4 = [85.0, 42.5]     # 20 games each (reliable baseline)
-    v5_1500 = 85.7        # 7 clean games
-    v5_2000_partial = 70.0  # 5 clean games (3W/1D/1L), sleep-interrupted
+    # v3/v4 measured at ~2s/move; v5 at standard 10min+0.
+    v3 = [40.0, 5.0]            # 10 games each (1500, 2000)
+    v4 = [85.0, 42.5]           # 20 games each (reliable baseline)
+    v5 = [66.7, 0.0]            # 10+0: 2000 (6G, 4W2L), 2600 (4G valid, 0W4L)
 
-    fig, ax = plt.subplots(figsize=(7.2, 4.6))
-    ax.bar(x - w, v3, w, label="v3 (C engine)", color="#cc5555")
-    ax.bar(x, v4, w, label="v4 (qsearch fix, 20G)", color="#5a8fc7")
-    ax.bar(x[0] + w, v5_1500, w, label="v5 (+watchdog)", color="#2f6fb3")
-    ax.bar(x[1] + w, v5_2000_partial, w, color="#2f6fb3",
-           hatch="//", alpha=0.5, edgecolor="white")
+    fig, ax = plt.subplots(figsize=(7.6, 4.7))
+    ax.bar([0 - w, 1 - w], v3, w, label="v3 (~2s/move)", color="#cc5555")
+    ax.bar([0, 1], v4, w, label="v4 (~2s/move, 20G)", color="#5a8fc7")
+    ax.bar([1 + w, 2 + w], v5, w, label="v5 (10min+0)", color="#2f6fb3")
 
-    for xi, val in zip(x - w, v3):
+    for xi, val in zip([0 - w, 1 - w], v3):
         ax.text(xi, val + 1.5, f"{val:.0f}%", ha="center", fontsize=9)
-    for xi, val in zip(x, v4):
+    for xi, val in zip([0, 1], v4):
         ax.text(xi, val + 1.5, f"{val:.1f}%", ha="center", fontsize=9)
-    ax.text(x[0] + w, v5_1500 + 1.5, f"{v5_1500:.1f}%", ha="center", fontsize=9)
-    ax.text(x[1] + w, v5_2000_partial + 1.5, "partial\n(n=5)",
-            ha="center", fontsize=8, color="#444")
+    ax.text(1 + w, v5[0] + 1.5, f"{v5[0]:.1f}%\n(4W/2L)", ha="center", fontsize=8)
+    ax.text(2 + w, v5[1] + 1.5, "0%\n(0W/4L)", ha="center", fontsize=8)
 
     ax.set_xticks(x)
     ax.set_xticklabels(groups)
@@ -219,7 +216,8 @@ def render_elo_progression():
     ax.set_ylim(0, 100)
     ax.axhline(50, color="grey", ls="--", lw=0.8, alpha=0.5)
     ax.set_title("Match Score vs ELO-limited Stockfish\n"
-                 "v3 -> v4: a single qsearch bugfix; v5 2000 partial (host sleep)")
+                 "v3->v4: a single qsearch bugfix  |  v5 at standard 10min+0 "
+                 "(6G vs 2000, 4G vs 2600)")
     ax.legend(loc="upper right", fontsize=9)
     ax.grid(axis="y", alpha=0.25)
     fig.tight_layout()
